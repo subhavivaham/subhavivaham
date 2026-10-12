@@ -165,7 +165,7 @@ export function ConfigForm({
           </div>
           <p className="text-xs text-charcoal-400">
             Type one address and press Add (or Enter) to add another. Shown in the
-            footer under "Registered Offices" on every public page.
+            footer under &ldquo;Registered Offices&rdquo; on every public page.
           </p>
 
           <div className="flex justify-end border-t border-charcoal-100 pt-4">

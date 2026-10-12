@@ -44,7 +44,6 @@ import {
   formatBytes,
   photoSizeError,
 } from "@/lib/constants";
-import { isSupabaseConfigured } from "@/lib/data/mode";
 import {
   ABOUT_MIN,
   ABOUT_MAX,
@@ -321,22 +320,14 @@ export function RegisterForm({
         return;
       }
 
-      // the members area is still gated on the local demo session, so seed it
-      // from the profile the action actually created
+      // sync the client auth provider with the profile the action just created
       registerWithProfile(draft.fullName.trim(), draft.email.trim(), result.profileId);
 
-      if (isSupabaseConfigured) {
-        // registration already established a real session, but sending the new
-        // member through the login form makes the password they just chose the
-        // thing that actually opens the account. mock mode has no real
-        // credential to check, so it goes straight to the dashboard instead.
-        toast("Profile created successfully. Please log in to continue.");
-        router.push("/login?registered=1");
-        return;
-      }
-
-      toast("Profile created successfully. Welcome to Subha Vivaham!");
-      router.push("/dashboard");
+      // registration already established a real session, but sending the new
+      // member through the login form makes the password they just chose the
+      // thing that actually opens the account.
+      toast("Profile created successfully. Please log in to continue.");
+      router.push("/login?registered=1");
     } catch {
       toast("Something went wrong while creating your profile. Please try again.");
     } finally {

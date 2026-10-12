@@ -29,7 +29,7 @@ const faqs = [
   },
   {
     q: "Do you offer refunds if I don't find a match?",
-    a: "Our membership plans are demo-only right now. In production, paused packets and refund policies will be clearly stated before purchase.",
+    a: "Every plan's duration, inclusions and refund terms are shown at checkout before you pay. If you have a concern after purchase, our office team will review it with you directly.",
   },
 ];
 

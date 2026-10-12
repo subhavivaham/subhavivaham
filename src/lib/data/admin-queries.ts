@@ -4,7 +4,7 @@
 //
 // unlike queries.ts there is no seed fallback: an empty result means the table
 // really is empty, and a failed request throws instead of quietly rendering
-// demo data that an admin would then try to edit.
+// placeholder data that an admin would then try to edit.
 import { cache } from "react";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { PAYMENT_SCREENSHOT_BUCKET } from "@/lib/constants";

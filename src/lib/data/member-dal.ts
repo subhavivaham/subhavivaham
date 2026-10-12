@@ -36,10 +36,9 @@ interface ProfileKeyRow {
   gender: string | null;
 }
 
-// mock mode has no sessions at all, so this reports "nobody" and the layout
-// falls back to the client-side demo wall. with a backend configured, the
-// session cookie is the only thing that counts: the old demo gate could be
-// satisfied by editing localStorage, which is not a boundary.
+// the session cookie is the only thing that counts: a client-side flag or a
+// stored value is not a boundary. when no credentials are configured there is no
+// session, so this reports "nobody".
 export const getCurrentMember = cache(async (): Promise<MemberIdentity | null> => {
   if (!isSupabaseConfigured) return null;
 

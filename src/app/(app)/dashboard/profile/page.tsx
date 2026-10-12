@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Pencil, Users, X } from "lucide-react";
-import { profiles } from "@/features/profiles/data";
 import { loadOwnProfile } from "@/features/profiles/queries";
 import { useAuth } from "@/features/auth/auth-provider";
 import { Button } from "@/components/ui/button";
@@ -50,12 +49,11 @@ export default function MyProfilePage() {
     };
   }, [profileId]);
 
-  // the demo profile stands in for the demo account, which has no row of its own.
-  // it must not stand in while the answer is still unknown: the session resolves
-  // after the first paint, so falling back too early paints the demo member's
-  // photo and name for a frame and then swaps in the real ones.
+  // the signed-in member's own row, once it has loaded. the id travels with the
+  // result so a slow response for a previous member can never be rendered for the
+  // current one. while the answer is unknown the spinner below is shown rather
+  // than a placeholder, so a stale profile is never painted.
   const matched = fetched && fetched.id === profileId ? fetched.profile : undefined;
-  const p = matched ?? profiles[0];
 
   if (isLoading || (profileId && !fetched)) {
     return (
@@ -65,9 +63,23 @@ export default function MyProfilePage() {
     );
   }
 
-  // the editor is only offered for a real row: the demo profile is bundled seed
-  // data with no row behind it, so a save would have nowhere to go
-  if (editing && matched) {
+  if (!matched) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-charcoal-900 sm:text-3xl">
+            My Profile
+          </h1>
+          <p className="mt-1 text-charcoal-500">
+            We could not find your profile details yet. Please refresh in a moment.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // the editor is only offered for a real row, which matched is guaranteed to be
+  if (editing) {
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -109,16 +121,16 @@ export default function MyProfilePage() {
         </Button>
       </div>
 
-      <OverviewCard profile={p} />
+      <OverviewCard profile={matched} />
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <BasicDetailsCard profile={p} />
-        <EducationCareerCard profile={p} />
-        <FamilyDetailsCard profile={p} />
-        <LifestyleCard profile={p} />
+        <BasicDetailsCard profile={matched} />
+        <EducationCareerCard profile={matched} />
+        <FamilyDetailsCard profile={matched} />
+        <LifestyleCard profile={matched} />
       </div>
 
-      <PartnerPreferenceCard profile={p} />
+      <PartnerPreferenceCard profile={matched} />
 
       <SectionCard title="My Verified Contact">
         <div className="flex items-start gap-3 text-sm text-charcoal-600">

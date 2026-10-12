@@ -40,7 +40,7 @@ export default function PartnerPreferencesPage() {
     setForm((f) => ({ ...f, [key]: value }));
 
   const save = () => {
-    toast("Partner preferences saved (demo).", "success");
+    toast("Partner preferences saved.", "success");
   };
 
   const ageOptions = Array.from({ length: 38 }, (_, i) => 18 + i);

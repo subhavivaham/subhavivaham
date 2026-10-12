@@ -15,8 +15,8 @@ export type AdminIdentity = {
 };
 
 // admin is recognised by a claim baked into the access token, never by a
-// hardcoded email, so the check survives a password change and cannot be
-// spoofed from localStorage the way the old demo gate could
+// hardcoded email, so the check survives a password change and is validated on
+// the server rather than trusted from the client
 function isAdmin(user: User | null): boolean {
   return user?.app_metadata?.role === ADMIN_CLAIM;
 }

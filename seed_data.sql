@@ -1,5 +1,5 @@
 insert into public.users (id, user_id, auth_user_id, name, email, role, status, joined_at) values
-  ('1ff65c4d-e4f4-4efc-82b6-b70e1c1f3ce5', 'user-praveen', null, 'Praveen Kumar', 'demo@subhavivaham.com', 'member', 'active', '2026-06-02T00:00:00.000Z'),
+  ('1ff65c4d-e4f4-4efc-82b6-b70e1c1f3ce5', 'user-praveen', null, 'Praveen Kumar', 'praveen@subhavivaham.com', 'member', 'active', '2026-06-02T00:00:00.000Z'),
   ('3271e2f8-7d59-4e3b-83c9-4f1c5d784946', 'user-admin', null, 'Subha Vivaham Admin', 'admin@subhavivaham.com', 'admin', 'active', '2026-01-10T00:00:00.000Z'),
   ('25b8531b-dd03-4840-8f7d-e5c7074d29d7', 'user-ananya', null, 'Ananya Iyer', 'ananya@subhavivaham.com', 'member', 'active', '2026-07-14T00:00:00.000Z'),
   ('4c35b9d0-aeeb-4c99-894e-f97d3861db0d', 'user-sneha', null, 'Sneha Krishnan', 'sneha@subhavivaham.com', 'member', 'active', '2026-05-21T00:00:00.000Z'),
