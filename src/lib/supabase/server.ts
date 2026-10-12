@@ -6,7 +6,7 @@ import { isSupabaseConfigured, supabaseKey, supabaseUrl } from "@/lib/data/mode"
 export async function getSupabaseServer(): Promise<SupabaseClient> {
   if (!isSupabaseConfigured || !supabaseUrl || !supabaseKey) {
     throw new Error(
-      "Supabase is not configured. Set NEXT_PUBLIC_DATA_MODE=supabase, NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY."
+      "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY."
     );
   }
   const cookieStore = await cookies();

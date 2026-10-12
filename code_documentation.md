@@ -2,13 +2,13 @@
 
 Front-end codebase for **Subha Vivaham** ("சுப விவாஹம்"), a premium Tamil Nadu matrimony platform ("Connecting hearts, bringing families together"). The app is **Supabase-only**: there is no mock mode and no data-mode switch. Page data is read from a real Supabase Postgres database, and with no credentials the app warns loudly at startup instead of quietly serving bundled sample rows.
 
-> **Migration status — the admin area and the public services pages are done.** Supabase schema, RLS and seed are live. **Admin is on real Supabase Auth** with a JWT-claim gate, all 8 admin screens read the database with no seed fallback, and all admin mutations are real writes. `/services` and `/vendor-register` are live, including the public submit → admin approval flow. `/temples` and `/temples/[temple_id]` are live and DB-backed. `/jathagam` calls an external astrology API through server actions. Member **login is email + password against real Supabase Auth**, and `/grooms` + `/brides` are member-area pages inside `(app)`. **Interests are tracked in the `interests` table** — sent and received with a status and a viewed flag, see [Interests (`public.interests` tracking)](#interests-publicinterests-tracking). Still on seed data / `localStorage`: `/dashboard/*`, `/matches`, and `/dashboard/preferences` in particular. See [Supabase Integration Status](#supabase-integration-status).
+> **Migration status — admin, the public pages and the money path are done.** Supabase schema, RLS and seed are live. **Admin is on real Supabase Auth** with a JWT-claim gate, all 8 admin screens (dashboard, users, profiles, communities, memberships, services, temples, **config**) read the database with no seed fallback, and all admin mutations are real writes. `/services` and `/vendor-register` are live, including the public submit → admin approval flow. `/temples` and `/temples/[temple_id]` are live and DB-backed, and temples now carry their own **approve / reject / active** review gates. `/jathagam` calls an external astrology API through server actions. Member **login and registration are email + password against real Supabase Auth** — the 8-step `/register` wizard writes auth → `users` → `profiles` → photos through the `registerMember` server action and emails the office on success. **Membership checkout is live**: a member pays by UPI, uploads a screenshot, and an admin approving the `membership_payments` request is what grants the plan; per-plan photo/interest quotas are enforced in `src/lib/payments/quotas.ts`. **Interests are tracked in the `interests` table** — sent and received with a status and a viewed flag, see [Interests (`public.interests` tracking)](#interests-publicinterests-tracking). Still on seed data: `/dashboard/*`, `/matches`, and `/dashboard/preferences` in particular. See [Supabase Integration Status](#supabase-integration-status).
 
 > **The temple area is the largest recent schema change**, and the one most likely to be out of step with your database: festivals moved from a `special_days` blob to a `temple_festivals` table, `latitude`/`longitude` were replaced by a single `maps_url`, and the `timings` string became seven per-weekday columns. See [Temples](#temples-utemples--temples--temple_id) before touching temple code. **If you see `Could not find the 'timings' column of 'temples'`, you are running an old database against new code** — the fix is the run order in [SQL run order](#sql-run-order), not a code change.
 >
-> **SQL execution order is four files, not one.** `table_deletion_query.md` → `table_creation.md` → `table_policies.sql` → `seed_data.sql`. `table_creation.md` creates tables but never enables RLS, so stopping after it leaves everything writable with the publishable anon key. `tables_document.md` is the annotated reference, **not** a file to paste.
+> **SQL execution order.** `table_deletion_query.md` → `table_creation.md` → `table_policies.sql` → the seed files (`primary_seed.sql` and `seed_data.sql`, then `success_stories_seed.sql`). `table_creation.md` creates tables but never enables RLS, so stopping after it leaves everything writable with the publishable anon key. `tables_document.md` is the annotated reference, **not** a file to paste.
 
-> **There is no `migrations/` folder; every database change ships through the four root files.** `table_deletion_query.md` → `table_creation.md` → `table_policies.sql` → `seed_data.sql`. Anything that rolls a live database forward is written idempotently into `table_creation.md` — a new column is an `add column if not exists` block plus a backfill, and a unique index / trigger / policy that used to leave the file now has its idempotent statement in `table_creation.md` or `table_policies.sql` with the RLS definition always matching in the latter. Re-pasting `table_creation.md` and `table_policies.sql` brings a live database in line with a fresh one; nothing needs a numbered migration file. One-off **copy** edits are different again — they get their own root-level idempotent script (see `update_community_descriptions.sql`), because re-pasting `seed_data.sql` to change wording will fail on the primary key.
+> **There is no `migrations/` folder; every database change ships through the root SQL files.** `table_deletion_query.md` → `table_creation.md` → `table_policies.sql` → the seed files. Anything that rolls a live database forward is written idempotently into `table_creation.md` — a new column is an `add column if not exists` block plus a backfill, and a unique index / trigger / policy that used to leave the file now has its idempotent statement in `table_creation.md` or `table_policies.sql` with the RLS definition always matching in the latter. Re-pasting `table_creation.md` and `table_policies.sql` brings a live database in line with a fresh one; nothing needs a numbered migration file. **The seed files are idempotent too** (`on conflict … do update`), so re-pasting one to correct copy is safe — with **one exception**: `success_stories_seed.sql` is a plain `INSERT` with no `on conflict`, so re-run it only against an empty `success_stories` table. You can always edit a row directly in the Supabase SQL editor instead.
 
 > **The temple redesign is the one case that needs a wipe rather than a re-paste.** `temple_festivals` is a new table and the temple timings/maps changes *dropped* columns, so there is no additive migration — `create table if not exists` cannot add a column to a table that already exists. Run the four files in order, from `table_deletion_query.md`. `table_creation.md` carries the equivalent `alter table … add column if not exists` statements in its comment block if you ever need to roll a live temple table forward without dropping it.
 
@@ -25,18 +25,22 @@ Prerequisites:
 
 ### SQL run order
 
-Schema, RLS, and rows are **four separate files** and the order is not optional:
+Schema, RLS, and rows are **separate files** and the order is not optional:
 
 | # | File | What it does | If you skip it |
 | --- | --- | --- | --- |
 | 1 | `table_deletion_query.md` | drops every table, policy and function | fine — only needed for a wipe |
-| 2 | `table_creation.md` | tables, columns, indexes, buckets, triggers, functions, storage policies | **nothing works** |
+| 2 | `table_creation.md` | tables, columns, indexes, buckets, triggers, functions, storage policies, the `site_config` row | **nothing works** |
 | 3 | `table_policies.sql` | `enable row level security` + every table policy | **every table is readable and writable by anyone with the anon key, which ships in the client bundle** |
-| 4 | `seed_data.sql` | the rows | empty tables; the site renders zero temples/profiles/vendors |
+| 4 | `primary_seed.sql` | `communities` + the three `membership_plans` rows | no plans to subscribe to; `/membership` renders empty |
+| 5 | `seed_data.sql` | the rest of the rows — users, profiles, photos, interests, service providers, temples + their children | empty tables; the site renders zero profiles/vendors/temples |
+| 6 | `success_stories_seed.sql` | the `success_stories` rows | `/success-stories` renders empty |
+
+The seed files are idempotent (`on conflict … do update`), so steps 4–6 are safe to re-run — except `success_stories_seed.sql`, which is a plain `INSERT` and only safe against an empty table. `primary_seed.sql` must land before anything that references a plan.
 
 `tables_document.md` is the **annotated reference only — do not paste it.** It explains why each column exists and where the two files disagree, `table_creation.md` is authoritative.
 
-> The deletion file drops the storage **policies** but not the **buckets**, so `profile-photos` and `temple-images` survive a wipe. That is deliberate: it lets the bucket inserts in step 2 land on `on conflict do update` instead of failing on a duplicate key. Files already in those buckets become orphans — invisible, because no row references them.
+> The deletion file drops the storage **policies** but not the **buckets**, so `profile-photos`, `temple-images` and `payment_screenshots` survive a wipe. That is deliberate: it lets the bucket inserts in step 2 land on `on conflict do update` instead of failing on a duplicate key. Files already in those buckets become orphans — invisible, because no row references them.
 
 ```bash
 npm install
@@ -75,7 +79,8 @@ npm run build      # verifies compile + every route + proxy
 | Icons | **lucide-react** (v1.47) | Brand icons (Instagram/Facebook/Twitter/etc.) were removed — do not import them |
 | Styling utils | **clsx** + **tailwind-merge** | `cn()` helper |
 | Motion | **framer-motion 14** | Used in exactly three places: the scroll-reveal primitives, the `Modal`, and the wedding-intro overlay. Everything else animates with the CSS keyframes in `globals.css` — see [Motion & Animation](#motion--animation) |
-| Backend | **@supabase/ssr 0.7 + @supabase/supabase-js** | Active in supabase mode; read path partially migrated (see status section) |
+| Backend | **@supabase/ssr 0.7 + @supabase/supabase-js** | The only data layer — Postgres + Auth + Storage. No mock mode (see status section) |
+| Email | **resend** | Server-only transactional mail for member + vendor registrations (`features/services/notify.ts`) |
 | Fonts | `next/font/google` | Inter (sans) + Playfair Display (display) |
 | Lint | **ESLint 9** (`eslint-config-next`, core-web-vitals + TS) | Also flags components created inside render (`react-hooks/static-components`) |
 | Package manager | npm | Node 22.x |
@@ -94,17 +99,16 @@ npm run lint       # ESLint over the project
 ## Project Structure
 
 ```
-seed_data.sql               # direct INSERTs of the whole dataset (no on conflict — re-running fails on PK)
-community_seed.sql          # standalone 15-row community insert, idempotent (on conflict do update)
-table_creation.md           # THE schema — run 2nd of 4; idempotent add-column + backfill blocks
-table_policies.sql          # run 3rd of 4 — RLS on all 15 tables, no helper functions
-table_deletion_query.md     # run 1st of 4 — full ordered teardown (children before parents)
+table_deletion_query.md     # 1st — full ordered teardown (children before parents)
+table_creation.md           # 2nd — THE schema: tables, buckets, triggers (incl. pin_user_privileges), storage policies
+table_policies.sql          # 3rd — enable row level security + every table policy
+primary_seed.sql            # 4th — communities + membership_plans (idempotent)
+seed_data.sql               # 5th — users, profiles, photos, interests, services, temples + children (idempotent)
+success_stories_seed.sql    # 6th — success_stories rows
 tables_document.md          # annotated column reference; READ it, do not paste it
-table_creation.md           # tables + pin_user_privileges(): stops a member self-promoting role/membership
-client_db_setup.md          # client-facing fresh-project setup checklist, in execution order
-testlogin.md                # member test credentials + the SQL that links Auth users to public.users
-update_community_descriptions.sql   # idempotent copy update for the communities table
-db_diagnostic.sql
+memebership_feature_list.md # the Free / Silver / Premium plan copy the plans table mirrors
+README.md                   # top-level overview (partly stale — this file is authoritative)
+next.config.ts              # images.remotePatterns + serverActions.allowedOrigins
 code_documentation.md       # this file
 src/
 ├── proxy.ts                  # Session-refresh proxy (Next 16, replaced middleware.ts); active whenever Supabase creds are present
@@ -119,9 +123,7 @@ src/
 │   │   ├── services/            # public vendor directory
 │   │   ├── vendor-register/     # public vendor submission (+ actions.ts)
 │   │   ├── temples/             # public directory + [temple_id] detail
-│   │   │   └── temple_page_updates.md   # STALE — predates the festival/maps/timings redesign
-│   │   ├── communities/ (+ [id])  success-stories/ (+ [id])  membership/
-│   │   └── profile/[id]/        # EMPTY — superseded by the (app) route; delete the folder
+│   │   └── communities/ (+ [id])  success-stories/ (+ [id])  membership/
 │   ├── (app)/                # Members-area routes (session-gated)
 │   │   ├── layout.tsx        # getCurrentMember() gate + DashboardShell wrapper
 │   │   ├── dashboard/ (+ /preferences, /profile)
@@ -134,8 +136,8 @@ src/
 │       └── admin/
 │           ├── login/        # /admin/login (force-dynamic) + AdminLoginForm
 │           ├── auth-actions.ts  # adminSignIn / adminSignOut
-│           ├── actions.ts    # 30 admin mutations, every one calls assertAdmin()
-│           ├── (protected)/  # layout.tsx = requireAdmin() gate; page, communities,
+│           ├── actions.ts    # ~50 admin mutations, every one calls assertAdmin()
+│           ├── (protected)/  # layout.tsx = requireAdmin() gate; page, communities, config,
 │           │                  #   memberships, profiles, services, temples, users
 ├── components/               # Reusable UI + page components (no route logic)
 │   ├── layout/               # header, footer, dashboard-shell, dashboard-nav, member-page-header, admin-shell
@@ -144,12 +146,12 @@ src/
 │   │                         #   profile-view, photo-gallery
 │   ├── interests/            # interests-manager (client): status + Accept/Decline/Withdraw
 │   ├── search/               # search-view, search-widget, search-filters
-│   ├── membership/           # pricing-plans (async, DB-backed), membership-card
+│   ├── membership/           # pricing-plans (async, DB-backed), membership-card, plan-checkout
 │   ├── forms/                # login-form, register-form
 │   ├── jathagam/             # jathagam-calculator
 │   ├── services/             # services-directory, vendor-register-form
 │   ├── admin/                # admin/table.tsx (Card/Table/Row/Cell/Pill), shared.tsx,
-│   │                         #   row-actions.tsx, confirm-dialog.tsx + 9 manager components
+│   │                         #   row-actions.tsx, confirm-dialog.tsx + the manager components
 │   ├── brand/                # logo (responsive widths)
 │   ├── providers/            # AppProviders (context composition)
 │   └── ui/                   # button, badge, avatar, modal, field, checkbox, stat-card, section-heading, reveal, progress, states, skeleton
@@ -157,9 +159,9 @@ src/
 │   ├── auth/                 # auth-provider.tsx — members area only; hybrid (see Auth section)
 │   ├── profiles/             # queries.ts (search/match scoring/stats), data.ts (seed)
 │   ├── search/               # types.ts (SearchFilters, SortKey), helpers.ts (queryString/parseQuery)
-│   ├── communities/  stories/  membership/   # data.ts (seed)
+│   ├── communities/  stories/  membership/   # data.ts (seed); membership/ also period.ts (hasExpired)
 │   ├── interests/            # data.ts — NOT seed: the DB loader for /interests (server-only)
-│   ├── services/             # types.ts, data.ts (mock vendor CRUD + 11 seed providers)
+│   ├── services/             # types.ts, data.ts (mock vendor CRUD + 11 seed providers), notify.ts (Resend email)
 │   ├── temples/              # types.ts — Temple, TempleInput, TempleFestival, TempleDayTiming
 │   └── jathagam/             # service.ts (external API client + response mapping), data.ts (nakshatras, RASI_*)
 ├── types/                    # index.ts — all domain types (Profile, Interest, InterestStatus, AppUser, …)
@@ -171,8 +173,9 @@ src/
     │   ├── admin-queries.ts  # PRIVATE loaders (needs the cookie session client; server-only)
     │   ├── member-dal.ts     # MEMBERS AUTH GATE: getCurrentMember() (users + profile, incl. gender + profileUuid)
     │   └── admin-dal.ts      # ADMIN AUTH GATE: ADMIN_CLAIM, getCurrentAdmin, requireAdmin, assertAdmin
-    ├── supabase/             # client.ts (browser), server.ts, proxy.ts (updateSession)
-    ├── constants.ts          # BRAND identity, DEMO_CREDENTIALS, ADMIN_NAV, CONTAINER, form option lists
+    ├── supabase/             # client.ts (browser), server.ts, proxy.ts (updateSession), admin.ts (service role)
+    ├── payments/             # quotas.ts — per-plan photo/interest limits + resolveMemberPlan (reads subscriptions)
+    ├── constants.ts          # BRAND identity, ADMIN_NAV, CONTAINER, form option lists, photo/bucket limits
     ├── registration.ts       # shared wizard constants + per-step validation (ABOUT_MIN / ABOUT_MAX live here)
     ├── utils.ts              # cn, formatRelativeTime, ageFromDateOfBirth, uid, …
     └── state/                # toast-provider.tsx  ← demo-store.tsx was DELETED with the interests rewrite
@@ -309,7 +312,7 @@ framer-motion appears in exactly three files plus the primitives:
 
 ### Scroll locking — the one thing that can brick the page
 
-Three components set `document.body.style.overflow = "hidden"`: `Modal`, and the `wedding-intro` overlay. The overlay's lock (`wedding-intro.tsx:42-49`) is released by `stage === "home"`, and `stage` only reaches `"home"` from an **`onAnimationComplete` callback** on a `motion.div`. If that callback never fires — an interrupted animation, a ref-count edge case, a variant object that resolves to a string — the overlay unmounts visually but the lock survives, and **the whole page cannot be scrolled with no visible cause**. When a page "cannot scroll", check for a stranded `overflow: hidden` on `body` before touching anything else. The plan and the applied order are in `animation_implementation_order.md`.
+Three components set `document.body.style.overflow = "hidden"`: `Modal`, and the `wedding-intro` overlay. The overlay's lock (`wedding-intro.tsx:42-49`) is released by `stage === "home"`, and `stage` only reaches `"home"` from an **`onAnimationComplete` callback** on a `motion.div`. If that callback never fires — an interrupted animation, a ref-count edge case, a variant object that resolves to a string — the overlay unmounts visually but the lock survives, and **the whole page cannot be scrolled with no visible cause**. When a page "cannot scroll", check for a stranded `overflow: hidden` on `body` before touching anything else.
 
 ---
 
@@ -343,17 +346,17 @@ Route structure (Next 16 route groups):
 
 1. **`src/proxy.ts`** — calls `updateSession`, then an explicitly **optimistic** check: for `/admin*` (excluding `/admin/login`) it looks for any `sb-*-auth-token` cookie and redirects to `/admin/login` if none. The file states plainly that a cookie is forgeable and this is only a fast path.
 2. **`requireAdmin()`** in the `(protected)` layout.
-3. **`requireAdmin()` again in every protected page** (`page`, `users`, `profiles`, `communities`, `memberships`, `services`, `temples`) — a layout is not re-run on every navigation and can be bypassed.
+ 3. **`requireAdmin()` again in every protected page** (`page`, `users`, `profiles`, `communities`, `memberships`, `services`, `temples`, `config`) — a layout is not re-run on every navigation and can be bypassed.
 4. **`assertAdmin()` in every server action** + RLS on the claim as the last line.
 
 Promoting someone: set `{"role": "admin"}` in **app metadata** under Supabase → Authentication → Users → Edit. `updateUserRoleAction` deliberately does **not** touch the claim (dashboard-managed, two-step on purpose).
 
-> **Two auth systems coexist.** The admin area is on the server-validated `app_metadata.role` claim. The members area (`features/auth/auth-provider.tsx`) is a hybrid whose only notion of admin is `isAdmin: user?.email === DEMO_CREDENTIALS.adminEmail` — a client-side boolean that nothing in the admin area reads. An account with that email but without the claim would be denied by the DAL while the client flag says true. Treat `isAdmin` as a UI convenience only, never as authorization.
+> **Two auth systems coexist, and they no longer overlap.** The admin area is on the server-validated `app_metadata.role` claim. The members area (`features/auth/auth-provider.tsx`) authenticates against Supabase Auth but exposes **no role at all** — `AuthProvider`'s value is only `user`, `login`, `registerWithProfile`, `logout`, `isLoggedIn`, `isLoading`. An admin who is also a member signs into the members area as an ordinary member, and there is no client-side flag that could be mistaken for authorization.
 
 ### `AdminShell` — enterprise layout (`src/components/layout/admin-shell.tsx`)
 - **Desktop**: fixed left sidebar `w-64` (logo header, icon+label nav from `ADMIN_NAV`, footer with user avatar-initial + name/`Administrator` + "View site" + "Sign out"), content column offset with `lg:pl-64`.
 - **Topbar**: sticky, full-width, contains a **breadcrumb showing the current page title** (no duplicates of the user identity) and actions ("View site" on ≥`md`, "Sign out"). On mobile the sign-out collapses to an icon and a hamburger opens the drawer.
-- **Mobile**: slide-in drawer (w-72, `max-w-[85vw]`, backdrop, close button) reusing the same nav block; both navs share `ADMIN_NAV` + an `ICONS` map of 7 lucide icons, falling back to `LayoutDashboard` for an unknown key.
+- **Mobile**: slide-in drawer (w-72, `max-w-[85vw]`, backdrop, close button) reusing the same nav block; both navs share `ADMIN_NAV` + an `ICONS` map of lucide icons (one per nav entry, including `settings` for Configuration, plus an unused `inbox`), falling back to `LayoutDashboard` for an unknown key.
 - Active nav item = exact match for `/admin`, otherwise `pathname.startsWith(href)`.
 - Auth identity appears **once** (sidebar footer). Do not re-add name/badges to the topbar.
 - Sign-out calls the `adminSignOut` server action inside `startTransition`.
@@ -368,11 +371,12 @@ Promoting someone: set `{"role": "admin"}` in **app metadata** under Supabase �
 | `/admin/users` | `fetchAdminUsers()` | `UsersManager` (also receives `currentUserEmail`) |
 | `/admin/profiles` | `fetchAdminProfiles()` | `ProfilesManager` |
 | `/admin/communities` | `fetchAdminCommunities()` | `CommunitiesManager` |
-| `/admin/memberships` | `fetchAdminPlans()` + `fetchAdminSubscriptions()` | `MembershipsManager` |
+| `/admin/memberships` | `fetchAdminPlans()` + `fetchAdminSubscriptions()` + `fetchAdminPayments()` | `MembershipsManager` (plans, subscriptions **and the UPI payment queue**) |
 | `/admin/services` | `fetchAdminServices()` | `ServicesManager` (see below) |
 | `/admin/temples` | `fetchAdminTemples()` | `TemplesManager` (see [Temples](#temples-utemples--temples--temple_id)) |
+| `/admin/config` | `fetchSiteConfig()` | `ConfigForm` (banner text/enabled + office address) |
 
-### Admin server actions (`src/app/(admin)/admin/actions.ts`, 896 lines)
+### Admin server actions (`src/app/(admin)/admin/actions.ts`, ~2,200 lines)
 
 `"use server"`. Exports `type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string }` and the `*Input` types. Private helpers: `fail`, `run(work)`, `newId(prefix)` (8 hex off `crypto.randomUUID()`), `slug`, `ageFrom`, `addMonths`, `profileColumns(input)`, `templeRow(input)`, `templeTimingsRow(timings)`, `revalidateProfileSurfaces()`, `revalidateTempleSurfaces()`, `photoProfileUuid(profileKey)`.
 
@@ -382,11 +386,13 @@ Promoting someone: set `{"role": "admin"}` in **app metadata** under Supabase �
 | --- | --- |
 | Users | `deleteUserAction` (also deletes the `profiles` + `subscriptions` rows), `updateUserStatusAction`, `updateAllUserStatusAction` (scoped `.eq("role","member")`), `updateUserRoleAction` (column only — never the claim) |
 | Profiles | `createProfileAction` (inserts `users` **first** for the FK, then `profiles` with `verified:false, status:"inactive"`), `updateProfileAction`, `setProfileStatusAction`, `setProfileVerifiedAction` (setting `verified` also forces `status="active"`, so both anon-read gates open together), `deleteProfileAction` |
-| Profile photos | `addProfilePhotoAction` (`is_primary` when `sort_order` 1), `removeProfilePhotoAction`, `setPrimaryProfilePhotoAction` (rewrites all `sort_order`), `moveProfilePhotoAction` (swaps with the neighbour, no-op out of bounds) |
+| Profile photos | `addProfilePhotoAction` (`is_primary` when `sort_order` 1), `addProfilePhotoUploadAction` (uploads to Storage, then inserts the row), `removeProfilePhotoAction`, `setPrimaryProfilePhotoAction` (rewrites all `sort_order`), `moveProfilePhotoAction` (swaps with the neighbour, no-op out of bounds) |
 | Communities | `createCommunityAction` (id = `slug(name) \|\| newId("c")`), `updateCommunityAction`, `setCommunityActiveAction`, `deleteCommunityAction` |
-| Memberships | `upsertPlanAction`, `deletePlanAction` (**refuses** while any subscription still references the plan, with the count in the error), `createSubscriptionAction` (`renews_on` = +3 months), `setSubscriptionStatusAction`, `changeSubscriptionPlanAction` (re-reads the price), `renewSubscriptionAction` (extends from the existing date if still in the future, else from today) |
+| Memberships | `upsertPlanAction`, `deletePlanAction` (**refuses** while any subscription still references the plan, with the count in the error), `createSubscriptionAction` (`renews_on` = +3 months), `setSubscriptionStatusAction`, `changeSubscriptionPlanAction` (re-reads the price), `renewSubscriptionAction` (extends from the existing date if still in the future, else from today), `setUserMembershipAction` (flips the denormalised `users` membership flags) |
+| Payments | `approvePaymentAction` (the only path that turns a UPI screenshot into a grant — it creates the subscription), `rejectPaymentAction`, `uploadPaymentScreenshotAction` (admin uploads proof on the member's behalf) |
 | Services | `createServiceAction`, `updateServiceAction`, `setServiceActiveAction`, `approveServiceAction`, `rejectServiceAction`, `deleteServiceAction` (see Vendor Services) |
-| Temples | `createTempleAction`, `updateTempleAction`, `deleteTempleAction`, `saveTempleFestivalsAction`, `uploadTempleImageAction`, `addTempleImagesAction`, `deleteTempleImageAction`, `uploadTempleCoverAction`, `removeTempleCoverAction` (see [Temples](#temples-utemples--temples--temple_id)) |
+| Temples | `createTempleAction`, `updateTempleAction`, `setTempleActiveAction`, `approveTempleAction`, `rejectTempleAction`, `deleteTempleAction`, `saveTempleFestivalsAction`, `saveTempleServicesAction`, `addTempleImagesAction`, `deleteTempleImageAction`, `reorderTempleImagesAction` (see [Temples](#temples-utemples--temples--temple_id)) |
+| Config | `updateSiteConfigAction` (banner text/enabled + office address on the single `main` row) |
 
 > **`templeRow()` must spread `templeTimingsRow()`, never assign it to a `timings` key.** Written as a key it sends a column named `timings`, which postgrest rejects by name the moment that column is gone from the schema — the error reads `Could not find the 'timings' column of 'temples' in the schema cache`, which looks like a missing migration but is a bug in this function.
 
@@ -418,7 +424,11 @@ Promoting someone: set `{"role": "admin"}` in **app metadata** under Supabase �
 
 ## Temples (`/temples`, `/temples/[temple_id]`, `/admin/temples`)
 
-The largest schema change in the project. Four tables — `temples` plus the `temple_services` / `temple_images` / `temple_festivals` children — and three retirements inside `temples` itself. **`src/app/(public)/temples/temple_page_updates.md` predates all of this and is wrong about festivals, coordinates and timings; this section replaces it.**
+The largest schema change in the project. Four tables — `temples` plus the `temple_services` / `temple_images` / `temple_festivals` children — and three retirements inside `temples` itself. This section is the authoritative description of the current shape.
+
+### Review gates — present in the schema and admin, **not yet enforced on read**
+
+`temples` carries `is_approved` and `active` (both `not null default true`) and the admin has the full set — `approveTempleAction` turns both on, `rejectTempleAction` clears `is_approved` but keeps the row, `setTempleActiveAction` is the on/off switch for an approved temple — and `TemplesManager` shows `Pending` / `Live` / `Off` pills. **But `temples_read` is still `using (true)`**, which `table_policies.sql` flags as the one decision left open: the gates do not decide visibility, and `fetchTemples()` does **not** push `.eq("is_approved", true).eq("active", true)` the way `fetchServices()` does. So a rejected or deactivated temple is still served to anon, and the "hidden from the public site" toast in the manager is aspirational. To make it real, change the single `using` clause to `using (is_approved and active)` — no app change needed — or add the same two filters to `fetchTemples()` as a second layer.
 
 ### What replaced what
 
@@ -528,6 +538,10 @@ The cap is **five including the cover**, which is why it cannot live in the stor
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | fallback only | fallback only | legacy key support |
 | `JATHAGAM_API_URL` | set | required for `/jathagam` | astrology engine client (server only) |
 | `JATHAGAM_API_KEY` | — | optional | sent as `Authorization: Bearer` |
+| `SUPABASE_SERVICE_ROLE_KEY` | optional | optional | server-only; the privileged client in `lib/supabase/admin.ts` (premium contact details). Never prefix with `NEXT_PUBLIC_` |
+| `RESEND_API_KEY` | optional | required to send mail | Resend transactional email (server-only) |
+| `EMAIL_FROM` | optional | optional | From header (defaults to `Subha Vivaham <onboarding@resend.dev>`) |
+| `VENDOR_NOTIFY_EMAIL` | optional | optional | inbox for member/vendor registration notices (defaults to `subhavivaham2017@gmail.com`) |
 
 > **Never prefix the astrology vars with `NEXT_PUBLIC_`** — that would ship the endpoint and key to the browser. `JATHAGAM_API_URL` is read on the server only, and `/jathagam` passes the calculator a plain `enabled` boolean rather than the URL.
 
@@ -537,29 +551,32 @@ The cap is **five including the cover**, which is why it cannot live in the stor
 
 > **Production/deploy gotcha:** `JATHAGAM_API_URL` lives only in gitignored `.env.local`. On Vercel it must be set in **Settings → Environment Variables** (key `JATHAGAM_API_URL`, value the run.app URL above) and the project redeployed — otherwise `/jathagam` renders the "being configured" fallback in prod.
 
-`.env.example` is the tracked deployment template (Supabase URL + publishable/anon key, `JATHAGAM_API_URL=`, `JATHAGAM_API_KEY=`) and carries a comment saying there is nothing to set for a data mode. `.env.local` is gitignored. **No service-role key is configured anywhere**, which is why every write path — the vendor register form and the member registration insert — has to work under RLS as `anon`/`authenticated`.
+There is **no tracked `.env.example`**; `.env` and `.env.local` are both gitignored. The public write paths (vendor register, member registration) still work under RLS as `anon`/`authenticated`. A **service-role key *is* configured** (`SUPABASE_SERVICE_ROLE_KEY`) and is reached only through `src/lib/supabase/admin.ts` for privileged server reads — currently just the premium contact details on `/profile/[id]`. Nothing that has a session-scoped alternative should use it, and a `NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY` would be inlined into the client bundle (the module warns if it ever sees one).
 
 > **Key naming:** `mode.ts` reads `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` first and falls back to `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Supabase now issues publishable keys; prefer the publishable name. Copy the key **including its trailing `-`**; the value with the hyphen omitted returns `401 Invalid API key`.
 
-Environment file: `.env.local` (gitignored via `.env*.local`). Full fresh-project walkthrough, in execution order, is **`client_db_setup.md`**.
+Environment files: `.env` and `.env.local`, both gitignored (`.env*`). Server-only secrets — the service-role key, Resend, and the astrology endpoint/key — belong here and never under a `NEXT_PUBLIC_` name.
 
 Supabase layer (`src/lib/supabase/`), split for the three runtimes:
 
 - `client.ts` — browser client via `createBrowserClient`; `getSupabase()` throws a clear "not configured" error when creds are missing.
 - `server.ts` — server `getSupabaseServer()` via `createServerClient` + `cookies()`.
 - `proxy.ts` — `updateSession(request)` cookie-refresh helper wired into `src/proxy.ts`; auth failures are swallowed so a bad session cannot 500 a request.
+- `admin.ts` — `getSupabaseAdmin()` plus `isServiceRoleConfigured`; the service-role client. Server-only, returns `null` (not a throw) when the key is absent, so a caller with a session-scoped fallback can still proceed.
 
 ### Loader modules — and the rule for adding more
 
 | Module | Client type | Tables | Importable from |
 | --- | --- | --- | --- |
 | `lib/data/queries.ts` | isomorphic, **client-safe** | public tables only | anywhere, including `"use client"` |
-| `lib/data/admin-queries.ts` | cookie session, server-only | `profiles`, `profile_photos`, `communities`, `users`, `subscriptions`, `membership_plans`, `service_providers`, `temples`, `temple_images`, `temple_services`, `temple_festivals` | server components / route handlers only |
+| `lib/data/admin-queries.ts` | cookie session, server-only | `profiles`, `profile_photos`, `communities`, `users`, `subscriptions`, `membership_plans`, `membership_payments`, `service_providers`, `temples`, `temple_images`, `temple_services`, `temple_festivals`, `site_config` | server components / route handlers only |
 | `lib/data/member-dal.ts` | cookie session, server-only | `users`, `profiles` | server components / server actions |
 | `lib/data/admin-dal.ts` | cookie session, server-only | `users` (name lookup only) | server components / server actions |
 | `features/interests/data.ts` | cookie session, server-only | `interests`, `profiles`, `profile_photos` | server components only |
+| `lib/payments/quotas.ts` | takes a client as an argument (no `next/headers`) | `subscriptions`, `membership_plans`, `users`, `interests` | server actions / server components |
+| `features/services/notify.ts` | no client — wraps Resend | — | server actions only (reads `RESEND_API_KEY`) |
 
-`queries.ts` exports `fetchProfiles`, `fetchCommunities`, `fetchPlans`, `fetchServices`, `fetchStories`; `admin-queries.ts` exports the seven `fetchAdmin*` loaders plus `fetchDashboardData()` and `type DashboardData`.
+`queries.ts` exports `fetchProfiles`, `fetchCommunities`, `fetchPlans`, `fetchServices`, `fetchStories` and `fetchSiteConfig`; `admin-queries.ts` exports the `fetchAdmin*` loaders (users, profiles, communities, plans, subscriptions, payments, services, temples) plus `fetchDashboardData()` and `type DashboardData`.
 
 The last row is the exception to "loaders live in `lib/data/`": it sits in `features/` because it is interest domain logic, not a generic table read, and because the members area keeps feature-specific loaders beside the feature. It obeys the same rule that matters — it reaches `getSupabaseServer()` (which calls `next/headers`) and must never be imported from a client component.
 
@@ -606,12 +623,12 @@ Project `subhavivaham_demo` (branch `main`, Production). **15 tables** defined i
 | `profiles` | `uuid` | active only | 4 rows; also has a **text** `profile_id` natural key; family/lifestyle/preference columns live here |
 | `profile_photos` | `uuid` | via parent profile | `profile_id uuid`, 12 rows |
 | `interests` | `uuid` | participants only | `from/to_profile_id uuid` → `profiles.id`; `status`, `viewed`, `created_at`/`updated_at` added by idempotent blocks in `table_creation.md` |
-| `membership_plans` | `text` | active only | 3 rows |
+| `membership_plans` | `text` | active only | 3 rows — Free / Silver / Premium; `photo_limit` / `interest_limit` drive the quotas |
 | `subscriptions` | `uuid` | own + admin | `user_id text` |
 | `membership_payments` | `uuid` | own + admin | paid UPI checkout requests; `payment_id text` natural key; `status` pending/approved/rejected; approving creates the subscription |
 | `success_stories` | `uuid` | published | 10 rows; `slug` is the natural key used by `/success-stories/[id]` |
 | `service_providers` | `text` | `is_approved and active` | `service_id` is the natural key (text); two gates, see Vendor Services |
-| `temples` | `text` | active + approved | 26 rows; `temple_id` is the natural key; seven `*_timings` columns and `maps_url` |
+| `temples` | `text` | **everyone** — gates not enforced | 26 rows; `temple_id` is the natural key; seven `*_timings` columns and `maps_url`. `is_approved`/`active` exist but `temples_read` is still `using (true)` |
 | `temple_services` | `text` | via parent temple | 21 rows; `price` in whole rupees, 0 renders "On request" |
 | `temple_images` | `text` | via parent temple | gallery; **five-image cap including the cover**, trigger-enforced |
 | `temple_festivals` | `text` | via parent temple | 10 rows; `happens_on` nullable; **not** date-filtered in the policy, filtered in the query |
@@ -646,7 +663,7 @@ The interest additions ship idempotently in `table_creation.md`:
 
 > **`profiles_read` no longer lets the world read every row** — it admits the owner's own row, `verified = true and status = 'active'` (the public browse gate), and the admin JWT claim, so `profiles.interested_profile` is no longer world-readable for pending/rejected profiles. That closes the privacy item this note used to flag.
 
-**The one public write path is `service_providers_public_insert`** (`for insert to anon`, `with check (is_approved = false and active = false)`) — the vendor register form. Everything else is admin-only for writes. Because anon can insert a service row from anywhere, the form needs rate limiting in front of the action for production; the row is inert while it sits unapproved, but nothing stops a bot filling the table.
+**`service_providers_public_insert` is the only truly anonymous write path** (`for insert to anon`, `with check (is_approved = false and active = false)`) — the vendor register form. Every other write is scoped either to the row's owner or to the admin JWT claim: authenticated members write their own `users` / `profiles` / `profile_photos` (registration), their `interests`, and their `membership_payments` checkout rows. Because anon can insert a service row from anywhere, the form needs rate limiting in front of the action for production; the row is inert while it sits unapproved, but nothing stops a bot filling the table.
 
 ### Route coverage
 
@@ -660,16 +677,16 @@ The interest additions ship idempotently in `table_creation.md`:
 | `/jathagam` | **External astrology API** via server actions |
 | `/temples`, `/temples/[temple_id]` | **DB** — `fetchTemples()` / `fetchTempleById()`, both reading the temple plus its services, images and festivals |
 | `/communities/[id]` | DB community row + seed profiles |
-| `/success-stories/[id]` | **DB**, `force-dynamic` — `fetchStory(id)` in `queries.ts` |
+| `/success-stories/[id]` | **DB**, `revalidate = 300` — `fetchStory(id)` in `queries.ts` |
 | `/dashboard/*`, `/matches` | seed + `localStorage` |
-| `/admin/*` (8 routes) | **DB**, real Supabase Auth gate |
+| `/admin/*` (9 routes) | **DB**, real Supabase Auth gate |
 | `/`, `/login`, `/register`, `/vendor-register` | static, reuse the above |
 
-Writes: **`/vendor-register` is a real DB write** (`service_providers` insert as `anon`, gated by RLS). It is the only public write. **Registration is a real 4-table write**: Supabase Auth → `users` → `profiles` → `profile_photos`, with the `users` insert covered by the `users_insert_self` policy in `table_policies.sql` and the role/membership columns pinned by the `table_triggers.sql` trigger. **Interests are real writes too** — `sendInterest` / `withdrawInterest` / `respondToInterest` / `markReceivedViewed` in `src/app/(app)/profile/actions.ts`, all under the `interests` RLS policies; see [Interests](#interests-publicinterests-tracking). **The temple area is entirely admin-write** — there is no public submit path for a temple, so `temples` needs no `is_approved`-equivalent review gate like `service_providers` has. Still localStorage-only: subscriptions, profile edits, and all `/dashboard/*` mutations.
+Writes: **`/vendor-register` is a real DB write** (`service_providers` insert as `anon`, gated by RLS). **`/register` is the other public write** and is the most complex: the `registerMember` server action writes Supabase Auth → `users` → `profiles` → `profile_photos` (the `users` insert covered by `users_insert_self`, the role/membership columns pinned by `pin_user_privileges()`), then emails the office via Resend. **Interests are real writes too** — `sendInterest` / `withdrawInterest` / `respondToInterest` / `markReceivedViewed` in `src/app/(app)/profile/actions.ts`, all under the `interests` RLS policies; see [Interests](#interests-publicinterests-tracking). **Membership checkout is a real write** — `submitPaymentRequest` in `src/app/(public)/membership/actions.ts` files a pending `membership_payments` row (screenshot uploaded to the private `payment_screenshots` bucket); an admin approval then creates the subscription. **The temple area is entirely admin-write** — there is no public submit path, though temples still carry `is_approved` / `active` gates (see [Temples](#temples-utemples--temples--temple_id)). Still seed-only: the `/dashboard/*` rollups and `/matches` scoring inputs.
 
 `fetchDashboardData()` fans out all six admin loaders in one `Promise.all` and computes `verified`, `live`, `activeSubs` and `revenue` server-side, replacing the old client-side `useMemo` rollups.
 
-Seed data: `seed_data.sql` (direct `INSERT`s, **no `on conflict`** — re-running it fails on the primary key, so never use it to change copy). `community_seed.sql` is the exception: it **is** idempotent (`on conflict (id) do update`) and exists so community copy can be corrected on a live database without touching the rest of the seed. Regenerate with `node %TEMP%\seedgen.js`; validate with `%TEMP%\checkfk.js`. Profile image URLs are `/assets/*.jpeg` but the files live in `src/assets` — they must be copied to `public/assets` or uploaded to Storage. **There is no `temple_images` insert** — gallery rows are created by the upload action, not the seed, so a fresh database has covers and galleries empty by design.
+Seed data ships in three tracked files. **`primary_seed.sql`** (communities + `membership_plans`, the plan `photo_limit`/`interest_limit` included) and **`seed_data.sql`** (users, communities, profiles, `profile_photos`, interests, service providers, temples + their `temple_festivals` / `temple_services` / `temple_images` children) are **idempotent** (`on conflict (id) do update`) and safe to re-run. **`success_stories_seed.sql`** is a plain `INSERT` with **no `on conflict`**, so re-running it against a populated table fails on the primary key. To change copy, edit the row in the database rather than the bundled fallback seed. Profile image URLs are `/assets/*.jpeg` but the files live in `src/assets` — they must be copied to `public/assets` or uploaded to Storage.
 
 ---
 
@@ -688,16 +705,16 @@ ToastProvider → AuthProvider → pages
 ### `AuthProvider` (`src/features/auth/auth-provider.tsx`) — members area only
 > **The admin area does not use this** (see Admin Console). Members authenticate against **real Supabase Auth with email + password only** — there is no username field, and no Google provider is configured.
 
-- `resolveAppUser(authUser)` walks `auth.uid → public.users.user_id → profiles.profile_id` with the **browser** client, relying on RLS for authorization. It selects `profile_id, gender` and returns `AppUser.gender` as `"male" | "female" | null`.
-- `AppUser` (`src/types/index.ts`) = `{ id, email, name, profileId, gender }`. `gender` is `null` between sign-up and the first readable `profiles` row, so any UI branching on it **must** have a fallback.
+- `resolveAppUser(authUser)` walks `auth.uid → public.users.user_id → profiles.profile_id` with the **browser** client, relying on RLS for authorization. It reads `name`, `email`, `phone_number`, `membership_plan` from the `users` row and `profile_id, gender` from the `profiles` row, then returns an `AppUser`.
+- `AppUser` (`src/types/index.ts`) = `{ id, email, mobile, name, profileId, gender, plan }`. `gender` is `null` between sign-up and the first readable `profiles` row, so any UI branching on it **must** have a fallback; `plan` is the live tier (`"free" | "silver" | "premium"`) resolved at sign-in so nav and gates can hide premium-only entries without another round trip.
 - `login` calls `auth.signInWithPassword` and signs the session back out if no `users` row resolves for the account.
-- **The login form does not advertise the demo account.** The client demo card was removed on request; `DEMO_CREDENTIALS` / `DEMO_USER` still exist in the bundle for the test workflow in `testlogin.md` and should be deleted once that is retired.
+- **The login form does not advertise any demo account.** The client demo card is gone, and `DEMO_CREDENTIALS` / `DEMO_USER` have since been removed from the codebase entirely. Sign in with a real Supabase account.
 - **The mobile number is not a login credential.** Registration collects it into `public.users.phone_number`, but Supabase Auth never receives it. Do not add a phone/password path without a deliberate decision.
 - **Confirm Email must be OFF** for the current registration helper — `signUp` returns no session when it is on, and `registerMember` then fails with the email-confirmation error.
 - The `boot()` effect calls `getSession()`, then subscribes to `onAuthStateChange` and defers `resolveAppUser` through `window.setTimeout(…, 0)` to avoid a deadlock in Supabase's auth callback.
-- API: `login`, `registerWithProfile`, `logout`, `isLoggedIn`, `isLoading`, `isAdmin` (plus the still-unwired `demoLogin` / `googleLogin`). `useAuth()` throws outside a provider; `AppProviders` mounts it globally under the root layout for **every** route group, admin included.
+- API: `user`, `login`, `registerWithProfile`, `logout`, `isLoggedIn`, `isLoading`. There is **no `isAdmin`, no `demoLogin` and no `googleLogin`** — the context knows nothing about roles. `useAuth()` throws outside a provider; `AppProviders` mounts it globally under the root layout for **every** route group, admin included.
 
-> **`isAdmin` is `user?.email === DEMO_CREDENTIALS.adminEmail`** — a client-side boolean with no claim check and no server call. Nothing in the admin area reads it, and it is **not** authorization. See the two-auth-systems note under Admin Console.
+> **The member context carries no admin flag at all.** `AuthProvider` exposes only `user`, `login`, `registerWithProfile`, `logout`, `isLoggedIn`, `isLoading` — there is nothing here for the admin area to (mis)read. Authorization is the server-side `app_metadata.role` claim; see the note under Admin Console.
 
 ---
 
@@ -870,7 +887,7 @@ Environment: **`JATHAGAM_API_URL`** (required, trailing slashes stripped) and **
 ### Public Vendor Register (`/vendor-register`)
 
 - `src/app/(public)/vendor-register/page.tsx` — server component: dark wine hero listing every `SERVICE_TYPE_LABELS` value as a chip, then the form plus a sticky aside of three promises and a note on how the listing will appear.
-- `src/app/(public)/vendor-register/actions.ts` — `registerVendorAction` (a `"use server"` action consumed via `useActionState`). Validates, then inserts with **`is_approved: false, active: false`**. In mock mode it returns a friendly message pointing at the phone number instead of pretending to save.
+- `src/app/(public)/vendor-register/actions.ts` — `registerVendorAction` (a `"use server"` action consumed via `useActionState`). Validates, then inserts with **`is_approved: false, active: false`**. When Supabase is not configured it returns a friendly "call us instead" message rather than pretending to save, and on a successful insert it emails the office via `sendVendorRegistrationEmail` (best-effort — a mail failure never fails the submission).
 - `src/components/services/vendor-register-form.tsx` — client form. **Field names, order and required flags mirror the admin vendor form exactly** — Category, Vendor name, Contact person, City, Phone, Details; required are name, city, phone. Anything stricter would reject submissions the admin screen would have accepted. On success it swaps to a "we have your details" panel.
 - Nothing revalidates `/services` on submit, because the submission cannot affect it.
 
@@ -898,8 +915,8 @@ The read policy is `using (is_approved and active)`, so an unapproved row is not
 - `auth/auth-provider.tsx` — the auth context (see State & Data Flow).
 - `communities/data.ts` — community directory (`communities`, `getCommunityById`, `profileCommunityNames`, `profileCountFor`). **Seed only** — the live copy comes from the `communities` table; see [Writing community copy](#writing-community-copy--edit-the-database-not-the-seed).
 - `temples/types.ts` — the domain types and the shared URL validators. **No `temples/data.ts`**: the temple area has no seed fallback at all, so an empty table renders an empty page rather than invented temples.
-- `stories/data.ts` — success stories (`successStories`, `getStoryById`). **Note:** `/success-stories/[id]` reads this file directly via `getStoryById` (seed), while the list page reads the `success_stories` table — so the two can disagree. Story images are low-res `w=200` URLs; use them at avatar size only.
-- `membership/data.ts` — Free / Gold / Premium plans + match-score breakdown (`membershipPlans`).
+- `stories/data.ts` — the bundled **fallback** story list (`successStories`, `getStoryById`). Both `/success-stories` (list) and `/success-stories/[id]` (detail, via `fetchStory`) read the `success_stories` table — this file only renders when that table is empty or unreachable. Story images are low-res `w=200` URLs; use them at avatar size only.
+- `membership/data.ts` — Free / Silver / Premium plans + match-score breakdown (`membershipPlans`).
 - `interests/data.ts` — **not seed data.** `fetchMemberInterests()`, the DB loader behind `/interests`, server-only because it reads the cookie session. See [Interests](#interests-publicinterests-tracking).
 - `services/data.ts` is the one remaining `localStorage` store under `features/` (key `subhavivaham_admin_services`), and it is unused in Supabase deployments.
 
@@ -915,7 +932,7 @@ Both public pages are thin server components that compose inline — there is no
 - Structure: light eyebrow hero → 3-column card grid → a dark `bg-charcoal-950` "Don't see your community?" CTA band.
 - Card anatomy (`rounded-2xl border border-wine-500 bg-white p-7`, `hover:border-wine-900`): community name in `font-display text-2xl text-wine-700` (→ `wine-900` on hover), Tamil name right-aligned in `text-charcoal-400`, **full description with no `line-clamp`**, then a `mt-auto` footer (hairline top border) with the profile count and a circular arrow button that fills `wine-700` on hover.
 - `h-full` + `flex flex-col` + `mt-auto` on the footer is what keeps footers aligned when descriptions differ in length. Do not reintroduce `line-clamp` here — full copy was a deliberate request.
-- The **category badge and the initial-letter tile were both removed** on request, and the `category` column has since been dropped from the model, the admin manager and the table itself — see `drop_community_category.sql`.
+- The **category badge and the initial-letter tile were both removed** on request, and the `category` column has since been dropped from the model, the admin manager and the table itself.
 - The dark CTA band is duplicated verbatim in `/success-stories`. Its two CTAs are full-width on mobile and inline from `sm` (`sm:mt-0 sm:ml-3`).
 
 ### `/success-stories` (`src/app/(public)/success-stories/page.tsx`)
@@ -934,8 +951,8 @@ The sticky right-hand aside (square image + a gold "Compatibility" tile) was **r
 
 > **This is the single most common way to waste an hour on this page.** `fetchCommunities()` selects the `communities` table, and `src/features/communities/data.ts` is **only a fallback** used when that table comes back empty (`mapped()` in `src/lib/data/queries.ts`). Editing `data.ts` therefore changes nothing on screen while the table has rows — and the page renders fine, so the edit looks like it half-worked.
 
-- Descriptions live in the `communities` table. Update them with **`update_community_descriptions.sql`** in the repo root: an idempotent `update … from (values …)` matched on `id`, safe to re-run. Paste it into the Supabase SQL editor.
-- Do **not** re-run `seed_data.sql` to change copy — it is a plain `INSERT` with no `on conflict` and will fail on the primary key.
+- Descriptions live in the `communities` table, seeded idempotently by **`primary_seed.sql`** (and again in `seed_data.sql`) as `insert … on conflict (id) do update`. Correct copy by editing the row in the Supabase SQL editor or re-pasting either file. (An older `update_community_descriptions.sql` used to do this and is gone.)
+- Do **not** re-run `success_stories_seed.sql` blindly — it is a plain `INSERT` with no `on conflict` and fails on the primary key once the stories exist.
 - Keep `features/communities/data.ts` in sync with the table; it is the fallback that renders when the database is unreachable.
 - Writes to `communities` are admin-only. `communities_admin_write` is `for all to authenticated` gated on `app_metadata.role = 'admin'`, so a `PATCH` with the **publishable** key returns `200` while updating **0 rows** — a silent no-op, not an error. Verify any write with a follow-up `select`.
 
@@ -989,11 +1006,11 @@ Fonts: Inter (sans, body) and Playfair Display (display, headings) via `next/fon
 
 ## Key Implementation Notes
 
-- **`next.config.ts`** allows `remotePatterns` for `images.unsplash.com`, `randomuser.me`, `*.supabase.co` and `upload.wikimedia.org`. These are **live dependencies, not leftovers**: `/success-stories` pulls `STATIC_IMAGES.couple1` (Unsplash) for its hero, every story card image is a remote Unsplash URL, and temples render Wikimedia commons photos. The home hero, the logo and the login side panel are local (`src/assets/*`).
+- **`next.config.ts`** allows `remotePatterns` for `images.unsplash.com`, `randomuser.me`, `*.supabase.co` and `upload.wikimedia.org`. These are **live dependencies, not leftovers**: `/success-stories` pulls `STATIC_IMAGES.couple1` (Unsplash) for its hero, every story card image is a remote Unsplash URL, and temples render Wikimedia commons photos. The home hero, the logo and the login side panel are local (`src/assets/*`). Two things in this file drift easily: the comment beside the `*.supabase.co` pattern still points at a `migrations/0001_registration_photo_uploads.sql` that **does not exist** (there is no `migrations/` folder — the buckets are created in `table_creation.md`), and `experimental.serverActions.allowedOrigins` is pinned to `["subhavivahamdemo.vercel.app"]`, which **must equal the deployment host**. Vercel reports its own host in `x-forwarded-host`, which does not match the browser's `Origin`, and Next aborts the action on that CSRF check with a bare 500 before the action runs — so every form (admin login included) fails. If you deploy under a different host, add it to `allowedOrigins` (or source the list from an env var) and redeploy.
 - **The login page image is vendored, not hotlinked.** `STATIC_IMAGES.heroAlt` (`src/lib/constants.ts`) is a static import of `src/assets/login-hero.jpg` (740×740, ~47 KB), and the `<Image>` in `login-form.tsx` is `priority unoptimized` inside a `max-h-[560px]` container. Earlier candidates from `cdn11.bigcommerce.com` and `img.magnific.com` were tried as remote URLs but timed out behind Next's image optimizer in dev, so they were dropped rather than whitelisted — if a future image must be remote, prefer a host that is actually fast.
 - **Images**: components use Next `<Image>`. Story images are fetched at `w=200`, so they belong in avatar-sized frames only — do not scale one into a hero or a half-width panel. Larger panels should use `STATIC_IMAGES.couple1..3` (1200–1400px) or a local `src/assets` import.
 - **No comments policy** — mostly holds, with deliberate exceptions: `features/jathagam/service.ts` and `features/jathagam/data.ts` (they document non-obvious mapping decisions) and `components/jathagam/jathagam-calculator.tsx` (debounce race, missing `overflow-hidden`) carry explanatory comments. Keep new explanatory comments in those files; elsewhere match the surrounding style.
-- **Registration** (`src/components/forms/register-form.tsx`) is a multi-step form that creates a profile and logs the user in via `registerWithProfile`. Per-step validation lives in **`src/lib/registration.ts`**, not in the component, so the same rules can run server-side. Several things worth knowing:
+- **Registration** (`src/components/forms/register-form.tsx`) is an **8-step wizard** (Account → Basics → Background → Family → Lifestyle → Location & about → Partner Preferences → Photos). On submit it calls the **`registerMember` server action** (`src/app/(public)/register/actions.ts`), which writes the Supabase Auth user → `users` → `profiles` → `profile_photos` rows and emails the office, then calls the client `registerWithProfile` so the auth provider picks up the new session. Per-step validation lives in **`src/lib/registration.ts`**, not in the component, so the same rules run server-side. Several things worth knowing:
   - **The password field uses `PasswordInput`** (`components/ui/password-input.tsx`) — the same eye/eye-off reveal toggle as login — so "Create your login" and login never drift apart in behaviour.
   - **A rejected submit navigates to the step that owns the error.** The server action validates all eight steps in one pass, so it can return an error for a field the wizard is no longer showing (e.g. a duplicate email on step 1 or a duplicate mobile on step 2). `ERROR_FIELD_STEPS` in `register-form.tsx` maps every error key to its step, and `earliestStepWithErrors()` sends the member back to the earliest step with an error so the highlight is actually visible — the old behaviour showed the notice with nothing highlighted on screen.
   - Two fields are worth knowing:
@@ -1003,7 +1020,7 @@ Fonts: Inter (sans, body) and Playfair Display (display, headings) via `next/fon
 - **Astrology API** — there is no local porutham engine. `marriageMatchAction` forwards the browser-supplied payload to the engine with **no server-side re-validation and no rate limiting**; place autocomplete is the only guard on cost. Ownership, uptime, rate limits and auth for the engine are all unconfirmed. An astrologer should still sign off on the score wording and thresholds.
 - **Jathagam results are not persisted.** `CALCULATION_METHOD` / `CALCULATION_VERSION` exist in `service.ts` so a result could be tied to a scoring version, but no history table or storage exists yet.
 - **Astrologer sign-off is still outstanding** on the Ashtakoota/Porutham presentation.
-- **Membership checkout has been removed.** Paid plan buttons (`membership-card.tsx`) only show a "not available" toast; there is no payment gateway, no order/invoice, and no entitlement grant path. Free plan selection is unaffected.
+- **Membership checkout is live — and manual, with no gateway.** A member on `/membership` picks a paid plan and opens the checkout modal (`components/membership/plan-checkout.tsx`): it shows the office UPI id / QR and the amount, and takes a payment-screenshot upload. `submitPaymentRequest` (`src/app/(public)/membership/actions.ts`) uploads the screenshot to the private `payment_screenshots` bucket and files a pending `membership_payments` row. **Approval is the grant path**: `approvePaymentAction` on the admin Payments screen creates the `subscriptions` row and sets the member's plan; `rejectPaymentAction` closes the request without granting. Per-plan limits are enforced from **`src/lib/payments/quotas.ts`** — `PHOTO_QUOTA` `{ free: 1, silver: 5, premium: 10 }`, `INTEREST_QUOTA` `{ free: 3, silver: 25, premium: null }` (unlimited) — via `resolveMemberPlan` / `resolvePlanLimits`.
 - **Notifications** rows are whole-row `Link`s to `/profile/[id]` when a `profileId` is present (they mark the notification read on click); otherwise a plain button. Avoid nesting interactive elements inside them (caused a hydration warning historically).
 - **Supabase**: `src/lib/supabase/client.ts` and `server.ts` throw a clear "not configured" error when creds are missing, and `mode.ts` warns once on the server. `proxy.ts` swallows auth errors so a stale session cannot 500 a request.
 - **`src/proxy.ts`** replaces the deprecated `middleware.ts` in Next 16; keep the filename/export (`proxy`) intact when enabling session refresh.
@@ -1012,8 +1029,8 @@ Fonts: Inter (sans, body) and Playfair Display (display, headings) via `next/fon
 - **Moving a route between `(public)` and `(app)`** changes who can reach it and which shell renders it. After the move, run `npx next typegen` or `tsc` will fail on stale `.next/types/validator.ts` entries, and audit every link to the old path — a public link to a member page silently becomes a redirect to `/login`.
 - **Async component gotcha**: making a component `async` (e.g. `PricingPlans`, `CommunitiesPage`) requires every parent to be `async` too. `tsc` will not catch this — it fails at build with a Pages-Router/Server-Component error.
 - **SQL execution**: there is no local Postgres or Docker in this environment. Schema, RLS, and seed changes must be pasted into the Supabase SQL editor. The editor continues past errors, so a half-failed batch looks successful — always confirm with `select … from pg_policies`.
-- **All schema, RLS, trigger and policy changes ship through the four root files — there is no `migrations/` folder.** A new column is an `add column if not exists` block plus a backfill `update` plus `set not null` in `table_creation.md`, so re-pasting the file rolls a live database forward safely (follow `profiles.district`, `profiles.caste`, the `profile_details` fold-in). A `create unique index`, a `create trigger`, or a policy rewrite is written idempotently too and lands in `table_creation.md` or `table_policies.sql` (policy definitions always in the latter), and `table_deletion_query.md` gains any teardown it needs — so a fresh database gets every change by re-pasting `table_deletion_query.md` → `table_creation.md` → `table_policies.sql` in order, and nothing needs a numbered migration file.
-- **One-off copy edits get their own root-level `.sql`, not a schema file.** `update_community_descriptions.sql` is the precedent: an idempotent `update … from (values …)` that can be pasted and re-pasted. Keep it separate from `table_creation.md`, which is about structure, not wording.
+- **All schema, RLS, trigger and policy changes ship through the root SQL files — there is no `migrations/` folder.** A new column is an `add column if not exists` block plus a backfill `update` plus `set not null` in `table_creation.md`, so re-pasting the file rolls a live database forward safely (follow `profiles.district`, `profiles.caste`, the `profile_details` fold-in). A `create unique index`, a `create trigger`, or a policy rewrite is written idempotently too and lands in `table_creation.md` or `table_policies.sql` (policy definitions always in the latter), and `table_deletion_query.md` gains any teardown it needs — so a fresh database gets every change by re-pasting `table_deletion_query.md` → `table_creation.md` → `table_policies.sql` in order, and nothing needs a numbered migration file.
+- **One-off copy edits are done as a one-row `update` in the Supabase SQL editor, not a schema file.** The retired `update_community_descriptions.sql` was the precedent: an idempotent `update … from (values …)` that could be pasted and re-pasted. Keep wording changes separate from `table_creation.md`, which is about structure.
 - **Adding a member `(app)` page:** compose `MemberPageHeader` (it carries the back-to-dashboard link the hidden sidebar cannot provide), and add the path to `FULL_WIDTH_ROUTES` in `dashboard-shell.tsx` **only** if it is a dense grid rather than a form — or, for a family of routes like `/profile/[id]`, add a `pathname.startsWith(...)` clause instead of one entry per id. If it is a new nav destination, add it to **both** the `items` array and the hand-written `MobileTabBar` list in `dashboard-nav.tsx`, at the requested position — those two files, not `constants.ts`, own the member nav.
 - **`DemoStoreProvider` is gone.** There is no `localStorage` demo state layer and no `useDemoStore()`. Anything interactive that needs to persist is a database row; if a feature genuinely cannot be one yet, keep its state local to the component rather than reviving a global mirror.
 - **Anything that branches on the member's gender** must handle `null` and must read it from `AppUser.gender` / `MemberIdentity.gender` (both from `profiles.gender`), never from the email or a hardcoded list.

@@ -1,6 +1,8 @@
 # Subha Vivaham — Premium Matrimony Platform
 
-Front-end codebase for **Subha Vivaham**, a premium Tamil Nadu matrimony platform ("Connecting hearts, bringing families together"). The app is **mode-based**: it runs by default in **mock mode** — all profiles and interests run on seed data persisted in `localStorage`, so the whole experience works without a backend. When Supabase credentials are supplied it can run in **supabase mode** against a real backend.
+Full-stack codebase for **Subha Vivaham** ("சுப விவாஹம்"), a premium Tamil Nadu matrimony platform ("Connecting hearts, bringing families together"). The app is **Supabase-only**: there is no mock mode and no data-mode switch. Page data is read from a real Supabase Postgres database (plus Auth and Storage), and with no credentials the app warns loudly instead of quietly serving bundled sample rows.
+
+> **`code_documentation.md` is the authoritative, deep reference.** This README is the quick orientation. When the two disagree, the detailed file wins.
 
 ---
 
@@ -14,7 +16,8 @@ Front-end codebase for **Subha Vivaham**, a premium Tamil Nadu matrimony platfor
 | Styling | **Tailwind CSS 4** (`@tailwindcss/postcss`) | Design tokens via `@theme` in `globals.css` |
 | Icons | **lucide-react** | |
 | Styling utils | **clsx** + **tailwind-merge** | `cn()` helper |
-| Backend (optional) | **@supabase/ssr 0.7 + @supabase/supabase-js** | Used only in supabase mode; mock data is used until it is configured |
+| Backend | **@supabase/ssr 0.7 + @supabase/supabase-js** | The only data layer — Postgres + Auth + Storage |
+| Email | **resend** | Server-only transactional mail for member + vendor registrations |
 | Fonts | `next/font/google` | Inter (sans) + Playfair Display (display) |
 | Lint | **ESLint 9** (`eslint-config-next`, core-web-vitals + TS) | |
 | Package manager | npm | Node 22.x |
@@ -36,58 +39,95 @@ npx tsc --noEmit
 
 ---
 
+## Environment
+
+`.env` and `.env.local` are both gitignored. There is no tracked `.env.example`.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | yes | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | yes (preferred) | Browser + server clients. Falls back to `NEXT_PUBLIC_SUPABASE_ANON_KEY` |
+| `JATHAGAM_API_URL` | for `/jathagam` | Astrology engine endpoint (server only) |
+| `JATHAGAM_API_KEY` | no | Optional `Authorization: Bearer` (self-hosted engines only) |
+| `SUPABASE_SERVICE_ROLE_KEY` | no | Server-only privileged client (`src/lib/supabase/admin.ts`) |
+| `RESEND_API_KEY` | to send mail | Resend transactional email |
+| `EMAIL_FROM` | no | From header (defaults to `Subha Vivaham <onboarding@resend.dev>`) |
+| `VENDOR_NOTIFY_EMAIL` | no | Registration notice inbox (defaults to `subhavivaham2017@gmail.com`) |
+
+> Never prefix a server-only secret with `NEXT_PUBLIC_` — those values are inlined into the client bundle at build time. `NEXT_PUBLIC_*` changes need a rebuild, not just a dev-server restart.
+
+---
+
+## Database
+
+The schema, RLS, triggers, storage buckets and seed all ship as root-level SQL files, run **in this order** (there is no `migrations/` folder):
+
+1. `table_deletion_query.md` — teardown
+2. `table_creation.md` — tables, columns, indexes, buckets, triggers, functions, storage policies, the `site_config` row
+3. `table_policies.sql` — all `enable row level security` + policies
+4. `primary_seed.sql` — communities + `membership_plans` (idempotent)
+5. `seed_data.sql` — users, profiles, photos, interests, service providers, temples + children (idempotent)
+6. `success_stories_seed.sql` — stories (plain `INSERT`, no `on conflict`)
+
+`tables_document.md` is a reference companion describing each table. Every seed file **except `success_stories_seed.sql`** is idempotent and safe to re-run. There is no local Postgres/Docker in this environment — paste the files into the Supabase SQL editor and verify with `select … from pg_policies`.
+
+---
+
 ## Project Structure
 
 ```
 src/
-├── proxy.ts                  # Session-refresh proxy (Next 16, replaced middleware.ts); inert until supabase mode
-├── app/                      # Next.js App Router (routes = pages; thin compositions only)
+├── proxy.ts                  # Session-refresh proxy (Next 16, replaces middleware.ts)
+├── app/                      # Next.js App Router (routes = thin page compositions)
 │   ├── layout.tsx            # Root layout: fonts, metadata, AppProviders
 │   ├── globals.css           # Tailwind v4 @theme tokens + global styles
-│   ├── icon.png              # Favicon (generated from the logo)
 │   ├── (public)/             # Marketing / guest routes (layout: Header + Footer)
-│   │   ├── page.tsx          # Home page (hero, featured, how-it-works, pricing, FAQ…)
-│   │   ├── search/  login/  register/  jathagam/
-│   │   ├── grooms/  brides/  # thin routes rendering SearchView with a gender
-│   │   ├── communities/ (+ [id])  success-stories/ (+ [id])
-│   │   └── membership/  profile/[id]/
-│   ├── (app)/                # Members-area routes (access-guarded)
-│   │   ├── layout.tsx        # Demo-login gate + DashboardShell wrapper
+│   │   ├── page.tsx          # Home page
+│   │   ├── login/  register/  jathagam/
+│   │   ├── services/  vendor-register/       (+ actions.ts)
+│   │   ├── temples/ (+ [temple_id])  communities/ (+ [id])
+│   │   └── success-stories/ (+ [id])  membership/
+│   ├── (app)/                # Members-area routes (session-gated)
+│   │   ├── layout.tsx        # getCurrentMember() gate + DashboardShell wrapper
 │   │   ├── dashboard/ (+ /preferences, /profile)
-│   │   ├── matches/  interests/
-│   └── (admin)/              # Admin area: layout.tsx + admin/{page,communities,jathagam,memberships,profiles,reports,success-stories,users}
+│   │   ├── matches/  interests/  search/  brides/  grooms/
+│   │   └── profile/[id]/
+│   └── (admin)/              # Admin area (real Supabase Auth + JWT claim)
+│       ├── admin/login/
+│       └── admin/(protected)/  # dashboard, users, profiles, communities,
+│                               # memberships, services, temples, config
 ├── components/               # Reusable UI + page components (no route logic)
 │   ├── layout/               # header, footer, dashboard-shell, dashboard-nav, admin-shell
 │   ├── home/                 # hero, why-us, how-it-works, success-stories, trust-faq, cta
-│   ├── profile/              # profile-card, profile-view, photo-gallery, actions
-│   ├── search/               # search-view, search-widget, search-filters
-│   ├── membership/           # pricing-plans, membership-card
-│   ├── forms/                # login-form, register-form
-│   ├── jathagam/             # jathagam-calculator
-│   ├── brand/                # logo
+│   ├── profile/  search/  jathagam/  brand/
+│   ├── membership/           # pricing-plans, membership-card, plan-checkout
+│   ├── admin/                # table kit + every admin manager + config-form
+│   ├── forms/                # login-form, register-form, vendor-register-form
 │   ├── providers/            # AppProviders (context composition)
-│   └── ui/                   # button, badge, avatar, modal, field, checkbox, …, states, skeleton
-├── features/                 # Domain logic + seed data (one folder per feature)
-│   ├── auth/                 # auth-provider.tsx  (AuthProvider, useAuth, DEMO_USER, ADMIN_USER)
-│   ├── profiles/             # queries.ts (search/match scoring/stats), data.ts (seed)
-│   ├── search/               # types.ts (SearchFilters, SortKey), helpers.ts (queryString/parseQuery)
-│   ├── communities/  stories/  membership/   # data.ts (seed)
-│   ├── interests/            # data.ts (seed)
-│   └── jathagam/             # service.ts (porutham), data.ts (nakshatras)
-├── hooks/                    # (removed with the fake-loading optimization)
+│   └── ui/                   # button, badge, avatar, modal, field, …, states, skeleton
+├── features/                 # Domain logic + fallback seed (one folder per feature)
+│   ├── auth/                 # auth-provider.tsx (AuthProvider, useAuth)
+│   ├── profiles/             # queries.ts (search/match/stats), data.ts (fallback seed)
+│   ├── search/  communities/  stories/  membership/  temples/
+│   ├── interests/            # data.ts → DB loader (server-only)
+│   └── services/             # types.ts, data.ts (unused localStorage), notify.ts (Resend)
 ├── types/                    # index.ts — all domain types (Profile, Interest, …)
 └── lib/
-    ├── data/                 # mode.ts (mock/supabase resolver)
-    ├── supabase/             # client.ts (browser), server.ts, proxy.ts (updateSession) — gated on env vars
-    ├── constants.ts          # BRAND identity, DEMO_CREDENTIALS, nav, form option lists
+    ├── data/                 # mode.ts (resolver), queries.ts, admin-queries.ts,
+    │                         # member-dal.ts, admin-dal.ts, mappers.ts
+    ├── supabase/             # client.ts, server.ts, proxy.ts, admin.ts (service role)
+    ├── payments/             # quotas.ts (per-plan photo/interest limits)
+    ├── constants.ts          # BRAND identity, ADMIN_NAV, CONTAINER, form option lists
+    ├── registration.ts       # wizard constants + per-step validation
     ├── utils.ts              # cn, formatRelativeTime, ageFromDateOfBirth, uid, …
-    └── state/                # demo-store.tsx (mock state), toast-provider.tsx
+    └── state/                # toast-provider.tsx
 ```
 
 Design decisions:
+
 - **`app/` is thin** — `page.tsx` files compose components and own metadata only; business logic lives in `features/` + `components/`.
-- **`features/<name>/queries.ts`** = read functions, **`actions.ts`** = mutations, **`data.ts`** = seed/demo data, **`types.ts`** = feature-local types. Supabase implementations will be dispatched behind these files in prod mode (see [Data Mode](#data-mode-mock-vs-supabase)).
-- Moving a page to `components/` (or a query to `features/`) is always safe: everything imports via the `@/…` alias, never relative cross-folder paths.
+- **`features/<name>/queries.ts`** = read functions, **`actions.ts`** = mutations, **`data.ts`** = fallback seed, **`types.ts`** = feature-local types.
+- Everything imports via the `@/…` alias, never relative cross-folder paths.
 
 ---
 
@@ -96,114 +136,72 @@ Design decisions:
 | Route | Group | Purpose |
 | --- | --- | --- |
 | `/` | `(public)` | Marketing home |
-| `/search` | `(public)` | Browse + filter profiles (query params drive filters) |
-| `/grooms`, `/brides` | `(public)` | Search presets for grooms / brides (thin wrappers) |
-| `/login` | `(public)` | Sign in / demo login |
-| `/register` | `(public)` | Multi-step registration |
-| `/jathagam` | `(public)` | Natchathram porutham calculator |
-| `/community` list + `/communities/[id]` | `(public)` | Community directory + member listing |
+| `/login`, `/register` | `(public)` | Member sign-in + 8-step registration |
+| `/jathagam` | `(public)` | Natchathram porutham calculator (external API via server actions) |
+| `/services`, `/vendor-register` | `(public)` | Public vendor directory + vendor submission |
+| `/temples`, `/temples/[temple_id]` | `(public)` | Temple directory + detail |
+| `/communities` (+ `/[id]`) | `(public)` | Community directory |
 | `/success-stories` (+ `/[id]`) | `(public)` | Success stories |
-| `/membership` | both | Pricing plans + checkout modal |
-| `/profile/[id]` | `(public)` | Public profile detail view |
-| `/dashboard` (+ `/preferences`, `/profile`) | `(app)` | Member home: stats, recommendations, interests |
-| `/matches` | `(app)` | Recommended / new / nearby / recently active |
-| `/interests` | `(app)` | Received & sent interests |
-| `/admin` (+ `/admin/*`) | `(admin)` | Admin console (profiles, users, communities, plans, stories, jathagam, reports) |
+| `/membership` | `(public)` | Pricing plans + manual UPI checkout |
+| `/dashboard` (+ `/preferences`, `/profile`) | `(app)` | Member home |
+| `/matches`, `/interests` | `(app)` | Matches + received/sent interests |
+| `/search`, `/brides`, `/grooms` | `(app)` | Profile browser (member-only) |
+| `/profile/[id]` | `(app)` | Profile detail (premium contact details via service role) |
+| `/admin`, `/admin/*` | `(admin)` | Admin console (9 routes incl. `/admin/login`) |
 
 Layout groups:
 
-- **Root** (`src/app/layout.tsx`) — fonts, metadata, wraps everything in `AppProviders`.
-- **`(public)` layout** — `Header` + `main` + `Footer`. Marketing pages.
-- **`(app)` layout** — client component that shows a login gate (`demoLogin()` / sign-in) when there is no active user, and renders `DashboardShell` (sidebar nav + topbar) when logged in.
-- **`(admin)` layout** — gates on `isAdmin` and renders `AdminShell`.
-- **`src/proxy.ts`** — session-refresh proxy (Next 16 renamed `middleware.ts` → `proxy.ts`). It is a no-op passthrough until supabase mode is enabled; route protection currently lives in the `(app)`/`(admin)` layouts.
+- **Root** — fonts, metadata, wraps everything in `AppProviders`.
+- **`(public)`** — `Header` + `main` + `Footer`.
+- **`(app)`** — server gate via `getCurrentMember()` → `redirect("/login")`, then `DashboardShell`.
+- **`(admin)`** — `requireAdmin()` in the `(protected)` layout; real Supabase Auth `app_metadata.role === "admin"` claim.
+- **`src/proxy.ts`** — optimistic cookie check for `/admin*` (fast path only); real authorization is the server DAL.
 
-> **Read the framework docs before editing:** this project ships `node_modules/next/dist/docs/`. Next.js (and App Router conventions) may differ from what you expect — see `AGENTS.md`.
 > After any code change, verify with `npx tsc --noEmit` and `npm run lint`.
 
 ---
 
-## Data Mode (mock vs Supabase)
+## Data Layer (Supabase only)
 
-The app resolves its data source once, in `src/lib/data/mode.ts`:
+`src/lib/data/mode.ts` is a resolver, not a mode switch — it exposes `isSupabaseConfigured` and the URL/key. There is **no `NEXT_PUBLIC_DATA_MODE`**; a flag once let a deployment quietly fall back to bundled seed rows.
 
-- `dataMode` → `"mock" | "supabase"`
-- `isMockMode` / `isSupabaseMode` → booleans for conditionals
-- `isSupabaseConfigured` → whether credentials were supplied
+Supabase clients (`src/lib/supabase/`):
 
-
-| Variable | Dev | Prod | Used by |
-| --- | --- | --- | --- |
-| `NEXT_PUBLIC_DATA_MODE` | `dev` (or `mock` / unset) | `prod` (or `supabase`) | `lib/data/mode.ts` |
-| `NEXT_PUBLIC_SUPABASE_URL` | — | required | supabase clients |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | — | required | browser client |
-
-Supabase layer (`src/lib/supabase/`), split for the three runtimes:
-
-- `client.ts` — browser client via `createBrowserClient`; `getSupabase()` throws a clear "not configured" error when creds are missing.
-- `server.ts` — server `getSupabaseServer()` via `createServerClient` + `cookies()`.
+- `client.ts` — browser client (`getSupabase()`), throws a clear "not configured" error when creds are missing.
+- `server.ts` — server client (`getSupabaseServer()`) via `createServerClient` + `cookies()`.
 - `proxy.ts` — `updateSession(request)` cookie-refresh helper wired into `src/proxy.ts`.
+- `admin.ts` — `getSupabaseAdmin()`, the service-role client (server-only, bypasses RLS).
 
-All three short-circuit in mock mode. Per-query Supabase dispatch behind `features/*/queries.ts` lands with the backend workstream (schema, RLS, generated types) — until then the mock path is the only active implementation.
+Loaders:
 
----
+| Module | Runtimes | Notes |
+| --- | --- | --- |
+| `lib/data/queries.ts` | isomorphic, client-safe | public tables only |
+| `lib/data/admin-queries.ts` | server-only | all admin screens; **no seed fallback** |
+| `lib/data/member-dal.ts` | server-only | `getCurrentMember()` — session-validated |
+| `lib/data/admin-dal.ts` | server-only | `getCurrentAdmin()` / `requireAdmin()` / `assertAdmin()` |
+| `features/interests/data.ts` | server-only | DB-backed interests |
+| `lib/payments/quotas.ts` | takes a client arg | per-plan photo/interest limits |
 
-## State & Data Flow
-
-All global state lives in React Context, composed in `src/components/providers/app-providers.tsx`:
-
-```
-ToastProvider → AuthProvider → DemoStoreProvider → pages
-```
-
-### `ToastProvider` (`src/lib/state/toast-provider.tsx`)
-- `useToast()` → `toast(message, kind?)` where kind is `success | error | info`.
-- Top-right fixed stack, auto-dismisses after 3.5s, caps at 4 visible.
-
-### `AuthProvider` (`src/features/auth/auth-provider.tsx`)
-- Tracks the logged-in user (`AppUser`), persisted to `localStorage` key `Subha Vivaha_demo_user`.
-- API: `login(email, password)`, `demoLogin()`, `googleLogin()`, `registerWithProfile(name, email, profileId)`, `logout()`, plus `isLoggedIn`, `isLoading`, `isAdmin`.
-- `DEMO_USER` (login persona) and `ADMIN_USER` are predefined; demo login accepts either the demo email or username `praveen`.
-- On restore, the demo user’s name is re-synced to `DEMO_CREDENTIALS.name`.
-
-### `DemoStoreProvider` (`src/lib/state/demo-store.tsx`)
-- Holds all demo-interactive data: interests.
-- Every slice is seeded from `features/*/data.ts` and persisted to a dedicated `localStorage` key:
-
-| Slice | localStorage key |
-| --- | --- |
-| Auth/session | `Subha Vivaha_demo_user` |
-| Interests | `Subha Vivaha_demo_interests` |
-
-- `useDemoStore()` exposes actions like `sendInterest`, `updateInterestStatus`, and derived counts.
+`queries.ts` must **never** statically import anything that reaches `next/headers` — client components import it. Private loaders belong in `admin-queries.ts`.
 
 ---
 
-## Features (logic layer)
+## Auth
 
-Domain logic lives in `src/features/`, grouped by feature, no React/route imports in the data files:
+- **Admin** — real Supabase Auth with an **app-metadata JWT claim** `{"role": "admin"}`. Gated in four layers: the proxy cookie fast-path, `requireAdmin()` in the `(protected)` layout, `requireAdmin()` again in every protected page, and `assertAdmin()` in every action + RLS on the claim. Promote a user under Supabase → Authentication → Users → Edit.
+- **Members** — real Supabase Auth, **email + password only** (no Google provider, no phone login). `AuthProvider` exposes `user`, `login`, `registerWithProfile`, `logout`, `isLoggedIn`, `isLoading` — **no role flag**. Registration writes auth → `users` → `profiles` → `profile_photos` through the `registerMember` server action. **Confirm Email must be OFF.**
 
-### `features/profiles/`
-- `queries.ts` — pure functions, no React:
-  - `searchProfiles(filters, sort)` — filters the seed profiles (`gender`, `age`, `location`, `religion`, `community`, `motherTongue`, `education`, `profession`, `maritalStatus`, `height`, `diet`, `drinking`, `smoking`, `income`, `withPhoto`) and sorts by `recommended | recently-active | newest | age`.
-  - `computeMatchScore(profile, current)` — weighted match scoring (age, location, religion/community, education, profession, lifestyle) producing a 74–99 match %.
-  - `getRecommendedMatches`, `getNewMatches`, `getNearbyMatches`, `getRecentlyActive`, `getFeaturedProfiles`, `getDashboardStats` — convenience queries for sections.
-- `data.ts` — seed profile list; exports `profiles`, `getProfileById`, `DEMO_PROFILE`, `CURRENT_USER_ID`.
+---
 
-### `features/search/`
-- `types.ts` — `SearchFilters` + `SortKey` (shared by `profiles/queries.ts` and the search components).
-- `helpers.ts` — `queryString()` / `parseQuery()` for keeping filters in the URL.
+## Key Implementation Notes
 
-### `features/jathagam/`
-- `service.ts` — `calculatePorutham()`, `verdictFor()`, `PoruthamStatus`.
-- `data.ts` — nakshatras, `RASI_NAMES`, `RASI_TAMIL`, `GANA_TAMIL`.
-
-### Other feature folders
-- `auth/auth-provider.tsx` — the auth context (see State & Data Flow).
-- `communities/data.ts` — community directory (`communities`, `getCommunityById`, `profileCommunityNames`, `profileCountFor`).
-- `stories/data.ts` — success stories (`successStories`, `getStoryById`).
-- `membership/data.ts` — Free / Gold / Premium plans + match-score breakdown (`membershipPlans`).
-- `interests/data.ts` — seed `demoInterests`.
+- **Membership checkout is live but manual** — a member pays by UPI, uploads a screenshot (`payment_screenshots` bucket), and an admin approving the `membership_payments` request is what grants the plan. Per-plan limits come from `src/lib/payments/quotas.ts` (Free 1 photo / 3 interests, Silver 5 / 25, Premium 10 / unlimited).
+- **Review gates** — `service_providers` is gated on `is_approved and active` and enforced by RLS. `temples` carries the same gates, but `temples_read` is still `using (true)` — the gates are **not yet enforced** on the temple read path (see the Temples section of `code_documentation.md`).
+- **`next.config.ts`** allows `remotePatterns` for `images.unsplash.com`, `randomuser.me`, `*.supabase.co` and `upload.wikimedia.org`, and pins `experimental.serverActions.allowedOrigins` to the deployment host — this must match the Vercel host or every server action (admin login included) fails on the CSRF check.
+- **`src/proxy.ts`** replaces the deprecated `middleware.ts` in Next 16; keep the filename/export (`proxy`) intact.
+- **Keep `app/` thin**: new pages compose `components/*`; new data/logic goes into `features/<domain>/` (`queries.ts`, `actions.ts`, `data.ts`, `types.ts`).
+- Use `cn()` from `@/lib/utils` for conditional className merging, and follow the component style in `src/components/ui/*`.
 
 ---
 
@@ -211,38 +209,15 @@ Domain logic lives in `src/features/`, grouped by feature, no React/route import
 
 Central brand facts in `src/lib/constants.ts` → `BRAND`:
 
-- Name **Subha Vivaham**, tagline "Connecting hearts, bringing families together."
-- Website `https://www.Subha Vivaha.com`, proprietor **S.Ramalingam Pillai**
-- Phone / WhatsApp `+91 88839 43711` (whatsapp: `88839 43711`), landline `04630 - 261186`, email `hello@Subha Vivaha.com`
+- Name **Subha Vivaham** (`சுப விவாஹம்`), tagline "Traditional Values. Meaningful Matches."
+- Website `https://www.subhavivaham.com`, proprietor **S. Ramalingam Pillai**
+- Phone / WhatsApp `+91 88839 43711` (`88839 43711`), landline `04630 - 261186`, email `subhavivaham2017@gmail.com`
 - GSTIN `33NPV5847N1Z5`
-- Offices: Office 1 — `1-56/1, Sub Register Off Street, Murappanadu, Tuticorin - 628 252`; Office 2 — `3/58, Natarajar Sannathi Street, Vallanadu, Tuticorin - 628 252`
+- Offices (both Tuticorin): Office 1 — `1-56/1, Sub Register Off Street, Murappanadu, Tuticorin - 628 252`; Office 2 — `3/58, Natarajar Sannathi Street, Vallanadu, Tuticorin - 628 252`
 - Socials: Instagram, Facebook, X (placeholder links)
 
 ### Design tokens (`src/app/globals.css`, Tailwind v4 `@theme`)
 
-Wine palette is green (naming kept for legacy compatibility): `wine-700 #087A45`, `wine-800 #075B35`, `wine-50 #EAF6EF`. Gold/saffron `gold-500 #EFA343`, `gold-600 #D98224`. Backgrounds `ivory-50 #FFFDF7`, text `charcoal-900 #252525`. Plus `shadow-card`, `shadow-card-hover`, and keyframe animations (`fade-in`, `scale-in`, `slide-up`, `slide-in-right`).
+Wine palette is **maroon** (naming kept for legacy compatibility): `wine-700 #7a1832`, `wine-800 #61122a`, `wine-500 #b53a63`. Gold `gold-500 #d4af37`, `gold-600 #b9942c`. Backgrounds `ivory-50 #fffdf4`, text `charcoal-900 #252525`. Plus `shadow-card`, `shadow-card-hover`, `shadow-soft`, and keyframe animations (`fade-in`, `scale-in`, `slide-up`, `slide-in-right`).
 
 Fonts: Inter (sans, body) and Playfair Display (display, headings) via `next/font/google`.
-
----
-
-## Key Implementation Notes
-
-- **`next.config.ts`** allows `remotePatterns` for `images.unsplash.com` and `randomuser.me`, but all current imagery is local (`src/assets/*`). Remote entries can stay if hero/success images ever return to stock URLs.
-- **Images**: components use Next `<Image>`; photo galleries derive URLs from `ProfilePhoto.url` via `Image` unoptimized or local imports where seeds reference imported assets.
-- **No comments policy**: source files do not contain explanatory inline comments (only a few `// ignore ...` lint suppressions).
-- **Registration** (`src/components/forms/register-form.tsx`) is a multi-step form that creates a profile and logs the user in via `registerWithProfile`.
-- **Membership checkout has been removed.** Paid plan buttons (`membership-card.tsx`) only show a "not available" toast; there is no payment gateway or order model. Free plan selection is unaffected.
-- **Supabase**: `src/lib/supabase/client.ts`, `server.ts`, and `proxy.ts` throw clear "not configured" errors / short-circuit until env vars are set. The demo does not require them.
-- **`src/proxy.ts`** replaces the deprecated `middleware.ts` in Next 16; keep the filename/export (`proxy`) intact when enabling session refresh.
-
----
-
-## Conventions Checklist
-
-- Start the dev server: `npm run dev` → http://localhost:3000
-- After changes: `npx tsc --noEmit` then `npm run lint`.
-- Keep `app/` thin: new pages compose `components/*`, new data/logic goes into `features/<domain>/` (`queries.ts`, `actions.ts`, `data.ts`, `types.ts`).
-- Seed/mock data lives under `features/<domain>/data.ts`; interactive mock state in `src/lib/state/demo-store.tsx`.
-- Use `cn()` from `@/lib/utils` for conditional className merging.
-- Follow the existing component style (function components, `lucide-react` icons, Tailwind utility classes, design tokens) shown in `src/components/ui/*`.
