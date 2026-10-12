@@ -161,7 +161,7 @@ src/
 │   ├── search/               # types.ts (SearchFilters, SortKey), helpers.ts (queryString/parseQuery)
 │   ├── communities/  stories/  membership/   # data.ts (seed); membership/ also period.ts (hasExpired)
 │   ├── interests/            # data.ts — NOT seed: the DB loader for /interests (server-only)
-│   ├── services/             # types.ts, data.ts (mock vendor CRUD + 11 seed providers), notify.ts (Resend email)
+│   ├── services/             # types.ts, data.ts (ServiceInput type), notify.ts (Resend email)
 │   ├── temples/              # types.ts — Temple, TempleInput, TempleFestival, TempleDayTiming
 │   └── jathagam/             # service.ts (external API client + response mapping), data.ts (nakshatras, RASI_*)
 ├── types/                    # index.ts — all domain types (Profile, Interest, InterestStatus, AppUser, …)
@@ -188,7 +188,7 @@ src/
 Design decisions:
 
 - **`app/` is thin** — `page.tsx` files compose components and own metadata only; business logic lives in `features/` + `components/`.
-- **`features/<name>/queries.ts`** = read functions, **`actions.ts`** = mutations, **`data.ts`** = seed/demo data, **`types.ts`** = feature-local types. Supabase implementations will be dispatched behind these files in prod mode (see [Data Mode](#data-mode-mock-vs-supabase)).
+- **`features/<name>/queries.ts`** = read functions, **`actions.ts`** = mutations, **`data.ts`** = bundled seed rows / the form submit shape, **`types.ts`** = feature-local types. Reads and writes go to Postgres directly; `data.ts` is seeding/fallback material only (see [Data Source](#data-source-supabase-only)).
 - Moving a page to `components/` (or a query to `features/`) is always safe: everything imports via the `@/…` alias, never relative cross-folder paths.
 - Extracted page sections (`hero.tsx`, `how-it-works.tsx`, …) come with a **SectionHeading** header block and live in `components/home/`; anything interactive adds `"use client"`.
 - No dead-code hoarding: the demo loading hook (`hooks/use-fake-loading`) was removed to kill artificial 350–400ms delays — do not re-introduce fake loading; render real data directly.
@@ -418,7 +418,7 @@ Promoting someone: set `{"role": "admin"}` in **app metadata** under Supabase �
   - `counts` separates `pending` (not approved) from `inactive` (approved but off), so the review queue can never hide inside a category total. A gold banner appears above the table when `counts.pending > 0`.
   - Status column: `Pending` (gold) / `Live` (green) / `Off` (neutral).
 - Server actions in `src/app/(admin)/admin/actions.ts`: `createServiceAction` (inserts `is_approved: true, active: true` — an admin has already vouched for it), `updateServiceAction`, `setServiceActiveAction`, `approveServiceAction`, `rejectServiceAction`, `deleteServiceAction`. All call `assertAdmin()` first. Approve/reject also `revalidatePath("/services")`.
-- `src/features/services/data.ts` — mock/localStorage store, key `subhavivaham_admin_services`: **11** seed providers, plus `loadServices()`, `addService()` (defaults both gates to `true`), `updateService()`, `setServiceActive()`, `setServiceApproved()`, `publicServices()` (returns `isApproved && active` only), `removeService()`, `resetServices()`, `servicesByType()`. `withGates()` backfills the two fields on rows written by an older build, so a pre-existing localStorage entry does not silently vanish from the site. `type ServiceInput = Omit<ServiceProvider, "id" | "addedAt" | "active" | "isApproved">`.
+- `src/features/services/data.ts` — holds only the admin form's submit shape: `type ServiceInput = Omit<ServiceProvider, "id" | "addedAt" | "active" | "isApproved">`. The old localStorage CRUD store (`loadServices()`, `addService()`, `resetServices()`, the 11 bundled seed providers, etc.) is gone — service reads/writes go through `lib/data/queries.ts`, `lib/data/admin-queries.ts` and `app/(admin)/admin/actions.ts`.
 
 ---
 
@@ -829,7 +829,7 @@ Domain logic lives in `src/features/`, grouped by feature, no React/route import
   - `loadSearchProfiles(...)` / `loadProfile(id)` — DB-first async variants used by migrated routes.
   - `computeMatchScore(profile, current)` — weighted match scoring (age, location, religion/community, education, profession, lifestyle) producing a 74–99 match %.
   - `getRecommendedMatches`, `getNewMatches`, `getNearbyMatches`, `getRecentlyActive`, `getFeaturedProfiles`, `getDashboardStats` — convenience queries for sections. **Still seed-backed**, including the home page's `getFeaturedProfiles(8)`.
-- `data.ts` — seed profile list; exports `profiles`, `getProfileById`, `DEMO_PROFILE`, `CURRENT_USER_ID`.
+- `data.ts` — seed profile list; exports `profiles`, `getProfileById`, `CURRENT_USER_ID`.
 
 ### `features/search/`
 - `types.ts` — `SearchFilters` + `SortKey` (shared by `profiles/queries.ts` and the search components).
@@ -908,7 +908,7 @@ The read policy is `using (is_approved and active)`, so an unapproved row is not
 ### `features/services/`
 - Vendor services — mandapams, Franchise Partners, catering, event management, photography, decoration.
 - `types.ts` — `ServiceProvider` model + `ServiceType` + labels/category maps (see Vendor Services above for the gate semantics).
-- `data.ts` — mock/localStorage store, key `subhavivaham_admin_services`: **11** seed providers (`svc-m1/m2, b1/b2, c1/c2, p1/p2, d1/d2, e1`, all `isApproved: true, active: true`, dated 2026-09-01 → 2026-09-11), plus `loadServices()`, `addService()` (defaults both gates to `true`), `updateService()`, `setServiceActive()`, `setServiceApproved()`, `publicServices()` (returns `isApproved && active` only), `removeService()`, `resetServices()`, `servicesByType()`. `withGates()` backfills the two fields on rows written by an older build, so a pre-existing localStorage entry does not silently vanish. `type ServiceInput = Omit<ServiceProvider, "id" | "addedAt" | "active" | "isApproved">`.
+- `data.ts` — holds only the admin form's submit shape: `type ServiceInput = Omit<ServiceProvider, "id" | "addedAt" | "active" | "isApproved">`. There is no local store or seed list any more; the old localStorage CRUD (`loadServices()`, `addService()`, `resetServices()`, 11 bundled providers) was removed.
 - `mappers.ts` → `toService()` maps `is_approved` to `isApproved` with a deliberate fallback: `row.is_approved == null ? Boolean(row.active) : Boolean(row.is_approved)`. Without it, `Boolean(null)` would mark every pre-existing row unapproved and unpublish the whole site if the backfill in `table_creation.md` were ever skipped.
 
 ### Other feature folders
@@ -1044,13 +1044,13 @@ Fonts: Inter (sans, body) and Playfair Display (display, headings) via `next/fon
 - Start the dev server: `npm run dev` → http://localhost:3000
 - After changes: `npx tsc --noEmit` then `npm run lint` (and `npm run build` before finishing). If a route moved or was added, `npx next typegen` first.
 - Keep `app/` thin: new pages compose `components/*`, new data/logic goes into `features/<domain>/` (`queries.ts`, `actions.ts`, `data.ts`, `types.ts`).
-- **Seed/mock data lives under `features/<domain>/data.ts`; interactive mock state is gone** (`src/lib/state/demo-store.tsx` was deleted with the interests rewrite). Anything a page must show for real comes from Postgres, not from these — and the seed fallback is actively dangerous, since it hides a broken query **and** your own data edits.
+- **Seed data lives under `features/<domain>/data.ts`; interactive mock state is gone** (`src/lib/state/demo-store.tsx` was deleted with the interests rewrite). Anything a page must show for real comes from Postgres, not from these — and the seed fallback is actively dangerous, since it hides a broken query **and** your own data edits.
 - **Adding a DB loader:** public table → `lib/data/queries.ts`; private table → `lib/data/admin-queries.ts` (server-only). Never import `@/lib/supabase/server` from `queries.ts`. Verify the row count against the database — the seed fallback will hide a broken query **and will also hide your own data edits** (see [The seed is a fallback](#the-seed-is-a-fallback-not-the-source-of-truth)).
 - **Changing page content that comes from the database:** update the table, not `features/<domain>/data.ts`. Editing the seed is a no-op whenever the table has rows.
 - Use `cn()` from `@/lib/utils` for conditional className merging.
 - Follow the existing component style (function components, `lucide-react` icons, Tailwind utility classes, design tokens) shown in `src/components/ui/*`.
 - Home sections: add under `components/home/`, wrap in `<section>` + `SectionHeading`, wire into `page.tsx` only.
-- **Admin**: route under `(admin)/admin/(protected)/`, compose shared `Card/Table/Row/Cell/Pill`; every page starts with `requireAdmin()`, every action starts with `assertAdmin()`, and mock data lives in `features/<domain>/data.ts`.
+- **Admin**: route under `(admin)/admin/(protected)/`, compose shared `Card/Table/Row/Cell/Pill`; every page starts with `requireAdmin()`, every action starts with `assertAdmin()`, and any bundled rows live in `features/<domain>/data.ts`.
 - **Admin auth**: never gate the admin area on `useAuth().isAdmin` or on `DEMO_CREDENTIALS`. Use `requireAdmin()` in a page/layout and `assertAdmin()` in an action; both read the server-validated `app_metadata.role` claim.
 - **Publishing content publicly**: anything an outsider can submit needs an explicit review gate — see the `is_approved` / `active` pattern under Vendor Services. Never let a public write path set the flag the public read filter depends on.
 - Mobile: verify with the audit conventions above (tables scroll, grids fall back to 1-col, fixed-width elements get `shrink-0` siblings).
