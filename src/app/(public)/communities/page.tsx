@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import { ArrowRight, Sparkles } from "lucide-react";
 import { CommunitiesHero } from "@/components/communities/communities-hero";
 import { CONTAINER } from "@/lib/constants";
 import { fetchCommunities, fetchProfiles } from "@/lib/data/queries";
@@ -32,8 +30,8 @@ export default async function CommunitiesPage() {
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
 
-  const membersOf = (name: string, tamilName: string) =>
-    counts.get(name.toLowerCase()) ?? counts.get(tamilName.toLowerCase()) ?? 0;
+  // const membersOf = (name: string, tamilName: string) =>
+  //   counts.get(name.toLowerCase()) ?? counts.get(tamilName.toLowerCase()) ?? 0;
 
   return (
     <div>
@@ -42,7 +40,17 @@ export default async function CommunitiesPage() {
         profileCount={profiles.length}
       />
 
-      <section id="communities-grid" className={`${CONTAINER} scroll-mt-24 pt-10 sm:pt-12`}>
+      <div className={`${CONTAINER} py-12 sm:py-16`}>
+        <div className="mx-auto max-w-2xl text-center">
+          <p className="text-lg font-semibold text-wine-700">Coming soon</p>
+          <p className="mt-2 text-sm text-charcoal-500">
+            Community details are being updated. Please check back shortly.
+          </p>
+        </div>
+      </div>
+
+      {/* Communities list and CTA - commented out as requested */}
+      {/* <section id="communities-grid" className={`${CONTAINER} scroll-mt-24 pt-10 sm:pt-12`}>
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {communities.map((c) => {
             const members = membersOf(c.name, c.tamilName);
@@ -107,7 +115,7 @@ export default async function CommunitiesPage() {
             Register your profile
           </Link>
         </div>
-      </div>
+      </div> */}
     </div>
   );
 }

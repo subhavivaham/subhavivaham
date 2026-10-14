@@ -43,7 +43,7 @@ export function CommunitiesHero({
 
         {/* the last track is wider because "ID & photo checked" is the longest
             label, and at an even four columns it wrapped while the rest did not */}
-        <dl className="mx-auto mt-10 grid max-w-3xl grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/10 bg-white/10 sm:grid-cols-[repeat(3,minmax(0,1fr))_1.45fr]">
+        {/* <dl className="mx-auto mt-10 grid max-w-3xl grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/10 bg-white/10 sm:grid-cols-[repeat(3,minmax(0,1fr))_1.45fr]">
           {readout.map((item) => (
             <div key={item.label} className="bg-wine-950 px-3 py-4 sm:px-4">
               <dt className="sr-only">{item.label}</dt>
@@ -64,7 +64,7 @@ export function CommunitiesHero({
             Browse communities
             <ArrowDown className="h-4 w-4" />
           </Button>
-        </div>
+        </div> */}
       </div>
     </HeroPlate>
   );

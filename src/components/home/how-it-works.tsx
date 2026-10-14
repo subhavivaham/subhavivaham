@@ -10,7 +10,7 @@ const steps = [
     title: "Contact Us",
     tamil: "தொடர்பு கொள்ளுங்கள்",
     details:
-      "Call or WhatsApp R. Viswanathan at 85086 30290. Visit our Tuticorin offices in Murappanadu or Vallanadu anytime.",
+      "Call or WhatsApp R. Viswanathan at 85086 30290. Visit our Tuticorin offices in Murappanadu or Vallanadu at any time or WhatsApp your horoscope to 85086 30290.",
   },
   {
     icon: UserPlus,
