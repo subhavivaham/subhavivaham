@@ -54,22 +54,22 @@ function ChartWheel() {
           return (
             <g key={rasi}>
               <line
-                x1={tickOuter.x}
-                y1={tickOuter.y}
-                x2={tickInner.x}
-                y2={tickInner.y}
+                x1={Math.round(tickOuter.x * 10) / 10}
+                y1={Math.round(tickOuter.y * 10) / 10}
+                x2={Math.round(tickInner.x * 10) / 10}
+                y2={Math.round(tickInner.y * 10) / 10}
                 className="stroke-gold-500/45"
               />
               <circle
-                cx={marker.x}
-                cy={marker.y}
+                cx={Math.round(marker.x * 10) / 10}
+                cy={Math.round(marker.y * 10) / 10}
                 r="2"
                 className="fill-gold-400/60"
                 stroke="none"
               />
               <text
-                x={label.x}
-                y={label.y}
+                x={Math.round(label.x * 10) / 10}
+                y={Math.round(label.y * 10) / 10}
                 textAnchor="middle"
                 dominantBaseline="middle"
                 className="fill-gold-200/80 text-[10px] sm:text-[12px] lg:text-[13px]"
@@ -108,16 +108,16 @@ function ChartWheel() {
       >
         <circle cx="200" cy="200" r="104" strokeDasharray="14 8" />
         {Array.from({ length: 12 }, (_, i) => {
-          const end = polar(104, i * 15);
-          return (
-            <line
-              key={i}
-              x1={200 - (end.x - 200)}
-              y1={200 - (end.y - 200)}
-              x2={end.x}
-              y2={end.y}
-            />
-          );
+              const end = polar(104, i * 15);
+              return (
+                <line
+                  key={i}
+                  x1={Math.round((200 - (end.x - 200)) * 10) / 10}
+                  y1={Math.round((200 - (end.y - 200)) * 10) / 10}
+                  x2={Math.round(end.x * 10) / 10}
+                  y2={Math.round(end.y * 10) / 10}
+                />
+              );
         })}
       </g>
 

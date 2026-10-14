@@ -2,7 +2,6 @@
 
 import { useEffect, useId, useRef, useState, useTransition, type KeyboardEvent, type ReactNode } from "react";
 import {
-  ArrowRight,
   Check,
   Heart,
   Info,
@@ -672,11 +671,12 @@ export function JathagamCalculator({ enabled = true }: { enabled?: boolean }) {
         </div>
 
         <div className="flex flex-col items-center gap-3 pb-4">
-          <Button size="lg" disabled={true} className="px-10">
-            <Sparkles className="h-4 w-4" /> Coming soon
+          <Button size="lg" onClick={submit} loading={pending} className="px-10">
+            {!pending && <Sparkles className="h-4 w-4" />}
+            {pending ? "Calculating..." : "Check Porutham"}
           </Button>
           <p className="text-xs text-charcoal-400">
-             Coming soon. Not available yet.
+            Free to check. Confirm with an astrologer before deciding.
           </p>
           {error && !error.includes("birth city") && (
             <p className="text-sm font-medium text-wine-600">{error}</p>
