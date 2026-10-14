@@ -29,12 +29,21 @@ const accountLinks = [
 
 const contactLinks = [
   {
+    id: "mobile-1",
     icon: MessageCircle,
     label: "WhatsApp / Mobile",
     value: BRAND.whatsapp,
     href: `tel:${BRAND.phone.replace(/[^+\d]/g, "")}`,
   },
   {
+    id: "mobile-2",
+    icon: MessageCircle,
+    label: "WhatsApp / Mobile",
+    value: BRAND.whatsappAlt,
+    href: `tel:${BRAND.phoneAlt.replace(/[^+\d]/g, "")}`,
+  },
+  {
+    id: "email",
     icon: Mail,
     label: "Email",
     value: BRAND.email,
@@ -148,7 +157,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
             <ul className="mt-6 space-y-3 text-sm">
               {contactLinks.map((c) => (
                 <li
-                  key={c.label}
+                  key={c.id}
                   className="flex items-center gap-2.5 text-slate-400"
                 >
                   <c.icon className="h-4 w-4 shrink-0 text-gold-500" />

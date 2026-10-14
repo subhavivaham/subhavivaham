@@ -13,7 +13,9 @@ export const BRAND = {
   owner: "S.Ramalingam Pillai",
   email: "subhavivaham2017@gmail.com",
   phone: "+91 88839 43711",
+  phoneAlt: "+91 85086 30290",
   whatsapp: "88839 43711",
+  whatsappAlt: "85086 30290",
   landline: "04630 - 261186",
   gstin: "33NPV5847N1Z5",
   offices: [
@@ -28,7 +30,7 @@ export const BRAND = {
   ],
   socials: {
     instagram: "https://instagram.com",
-    facebook: "https://facebook.com",
+    facebook: "https://www.facebook.com/share/1DvYi71ep3/?mibextid=wwXIfr",
     twitter: "https://x.com",
   },
 } as const;

@@ -666,3 +666,89 @@ on conflict (id) do update
        alt       = excluded.alt,
        sort_order = excluded.sort_order;
 
+insert into public.communities (
+  id, name, tamil_name, description, tamil_description, visible_members, active
+) values
+  ('iyer', 'Iyer', 'ஐயர்',
+   'Tamil Brahmin community known for scholarship, ritual knowledge and a deep-rooted family culture.',
+   'பாடிப்பு, சமண அறிவு மற்றும் ஆழமான குடும்பப் பண்புகளுக்குப் பெயர் பெற்ற தமிழ் பிராமண சமுதாயம்.',
+   0, true),
+
+  ('iyengar', 'Iyengar', 'ஐயங்கார்',
+   'Vaishnava Brahmin community with a rich tradition of bhakti, discipline and strong family bonds.',
+   'வைஷ்ணவ பக்தி, ஒழுக்கம் மற்றும் வலுவான குடும்பப் பிணைப்புகள் கொண்ட சமுதாயம்.',
+   0, true),
+
+  ('reddy', 'Reddy', 'ரெட்டி',
+   'Agrarian community known for entrepreneurship, philanthropy and commanding respect across regions.',
+   'விவசாயம், அறிவுடைய தொழில் முனைவு மற்றும் பல்வேறு பகுதிகளிலும் மதிப்பைப் பெறும் சமுதாயம்.',
+   0, true),
+
+  ('pillai', 'Pillai', 'பிள்ளை',
+   'One of the most widespread Tamil communities - educated, industrious and deeply family-oriented.',
+   'கல்வியும், தொழிலும், ஆழமான குடும்ப ஒற்றுமையும் முக்கியமான, மிகவும் பரந்த தமிழ் சமுதாயம்.',
+   0, true),
+
+  ('chettiar', 'Chettiar', 'செட்டியார்',
+   'Celebrated merchant community of Tamil Nadu, historically famed for banking, trade and global enterprise.',
+   'வங்கி, வணிகம் மற்றும் உலகளாவிய தொழில் ஏற்றங்களில் புகழ் பெற்ற செட்டியார் சமுதாயம்.',
+   0, true),
+
+  ('mudaliar', 'Mudaliar', 'முதலியார்',
+   'Respected Tamil community with a legacy of leadership, agriculture and service to society.',
+   'நெறுங்கால் நிலவுரிமை, விவசாயம் மற்றும் சமூகப் பணிக்கு வரல்புரிம்பு கொண்ட மதிப்புடைய சமுதாயம்.',
+   0, true),
+
+  ('gounder', 'Gounder', 'கவுண்டர்',
+   'Predominantly Kongu region community - progressive, agrarian and known for strong family discipline.',
+   'கொங்கு மண்டலத்தைச் சேர்ந்த முன்னோற்றமுடைய, விவசாய நிலையைக் கொண்ட, குடும்ப ஒழுங்கைப் பேணும் சமுதாயம்.',
+   0, true),
+
+  ('naidu', 'Naidu', 'நாயுடு',
+   'Ambitious community prominent in business and politics across coastal Andhra and Tamil Nadu.',
+   'கடற்கரை ஆந்திரா பகுதியிலும் தமிழ்நாட்டிலும் வணிகத்திலும் அரசியலிலும் முன்னிலை வகிப்ப சமுதாயம்.',
+   0, true),
+
+  ('thevar', 'Thevar', 'தேவர்',
+   'Brave and fiercely traditional community of southern Tamil Nadu, known for unity and respect.',
+   'துணிவான தன்மையும், பழைய பண்புகளும் மதிக்கப்படும் தென்தமிழகச் சமுதாயம். ஒற்றுமையும் மரியாதையும் இதன் முக்கிய அடையாளங்கள்.',
+   0, true),
+
+  ('pandian', 'Pandian', 'பண்டியன்',
+   'Honoured for its link to the ancient Pandya dynasty - proud, cultured and family-centred.',
+   'பண்டிய வம்சத்துடன் தொடர்புடையதாக மதிப்புற்ற சமுதாயம். பண்பும், குடும்பப் பற்றும் இதன் முக்கிய அடையாளங்கள்.',
+   0, true),
+
+  ('nadar', 'Nadar', 'நாடார்',
+   'Industrious community that developed through trade and business, today highly educated.',
+   'வணிகமும் தொழிலும் வழியாக முன்னேறி, இன்று உயர்ந்த கல்வியைக் கொண்ட மிகவும் செயற்படும் சமுதாயம்.',
+   0, true),
+
+  ('vanniyar', 'Vanniyar', 'வண்ணியர்',
+   'Major agrarian community of northern Tamil Nadu, rooted in village life and family values.',
+   'வடக்கு தமிழ்நாட்டின் முக்கிய விவசாயச் சமுதாயம். கிராம வாழ்க்கையும் குடும்ப நேர்மையும் அதன் அடிப்படை.',
+   0, true),
+
+  ('kumar', 'Kumar', 'குமார்',
+   'Warrior-origin community of Tamil Nadu known for loyalty, simplicity and strong family values.',
+   'வீர வழக்கைக் கொண்ட, நன்மையும் எளிமையும் பேணும் தமிழ்நாட்டுச் சமுதாயம்.',
+   0, true),
+
+  ('raman', 'Raman', 'ராமன்',
+   'A respected Tamil community rooted in agriculture, education and traditional family values.',
+   'விவசாயமும், கல்வியும், பாரம்பரியக் குடும்பப் பண்புகளும் கொண்ட மதிப்புள்ள சமுதாயம்.',
+   0, true),
+
+  ('kongu-vellalar', 'Kongu Vellalar', 'கொங்கு வேள்ளார்',
+   'Agricultural community of the Kongu Nadu region, known for hard work and close-knit families.',
+   'கொங்கு மண்டலத்தின் விவசாயச் சமுதாயம். அய்வுடனும், இறுக்கமான குடும்பங்களுடனும் புகழ் பெற்றது.',
+   0, true)
+
+on conflict (id) do update set
+  name              = excluded.name,
+  tamil_name        = excluded.tamil_name,
+  description       = excluded.description,
+  tamil_description = excluded.tamil_description,
+  visible_members   = excluded.visible_members,
+  active            = excluded.active,
+  updated_at        = now();
