@@ -58,7 +58,7 @@ function FooterHeading({ children }: { children: React.ReactNode }) {
 
 export function Footer({ officeAddress }: { officeAddress?: string }) {
   return (
-    <footer className="mt-20 bg-charcoal-950 text-charcoal-300">
+    <footer className="mt-20 bg-slate-900 text-slate-300">
       <div className={cn("py-14", CONTAINER)}>
         <div className="grid gap-x-8 gap-y-12 lg:grid-cols-12">
           <div className="lg:col-span-5 xl:col-span-4">
@@ -66,7 +66,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
             <p className="mt-5 font-display text-lg text-gold-300">
               {BRAND.tagline}
             </p>
-            <p className="mt-3 max-w-md text-sm leading-relaxed text-charcoal-400">
+            <p className="mt-3 max-w-md text-sm leading-relaxed text-slate-400">
               {BRAND.oneLiner}
             </p>
             <div className="mt-6 flex flex-wrap items-center gap-2.5">
@@ -76,7 +76,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
                   href={s.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="rounded-full bg-white/5 px-3.5 py-1.5 text-xs font-medium text-charcoal-300 ring-1 ring-white/10 transition-colors hover:bg-gold-500 hover:text-charcoal-950"
+                  className="rounded-full bg-white/5 px-3.5 py-1.5 text-xs font-medium text-slate-300 ring-1 ring-white/10 transition-colors hover:bg-gold-500 hover:text-slate-900"
                 >
                   {s.label}
                 </a>
@@ -91,7 +91,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
                 <li key={l.href}>
                   <Link
                     href={l.href}
-                    className="text-charcoal-400 transition-colors hover:text-gold-400"
+                    className="text-slate-400 transition-colors hover:text-gold-400"
                   >
                     {l.label}
                   </Link>
@@ -107,7 +107,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
                 <li key={l.href}>
                   <Link
                     href={l.href}
-                    className="text-charcoal-400 transition-colors hover:text-gold-400"
+                    className="text-slate-400 transition-colors hover:text-gold-400"
                   >
                     {l.label}
                   </Link>
@@ -125,19 +125,19 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
                     .map((a) => a.trim())
                     .filter(Boolean)
                     .map((address) => (
-                      <li key={address} className="flex items-start gap-2.5 text-charcoal-400">
+                      <li key={address} className="flex items-start gap-2.5 text-slate-400">
                         <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-gold-500" />
-                        <span className="font-semibold text-charcoal-200">{address}</span>
+                        <span className="font-semibold text-slate-200">{address}</span>
                       </li>
                     ))
                 : BRAND.offices.map((office) => (
                   <li
                     key={office.name}
-                    className="flex items-start gap-2.5 text-charcoal-400"
+                    className="flex items-start gap-2.5 text-slate-400"
                   >
                     <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-gold-500" />
                     <span>
-                      <span className="block font-semibold text-charcoal-200">
+                      <span className="block font-semibold text-slate-200">
                         {office.name}
                       </span>
                       {office.address}
@@ -149,7 +149,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
               {contactLinks.map((c) => (
                 <li
                   key={c.label}
-                  className="flex items-center gap-2.5 text-charcoal-400"
+                  className="flex items-center gap-2.5 text-slate-400"
                 >
                   <c.icon className="h-4 w-4 shrink-0 text-gold-500" />
                   <a
@@ -164,7 +164,7 @@ export function Footer({ officeAddress }: { officeAddress?: string }) {
           </div>
         </div>
 
-        <div className="mt-12 flex flex-col items-center justify-center gap-3 border-t border-white/10 pt-6 text-center text-xs text-charcoal-500">
+        <div className="mt-12 flex flex-col items-center justify-center gap-3 border-t border-white/10 pt-6 text-center text-xs text-slate-500">
           <p>
             © {new Date().getFullYear()} {BRAND.name} ({BRAND.nameTamil}). All
             rights reserved.
