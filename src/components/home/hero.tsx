@@ -17,8 +17,8 @@ export function Hero() {
       <div className={`${CONTAINER} relative pt-10 pb-16 sm:pt-12 sm:pb-24`}>
         <div className="grid items-center gap-8 lg:grid-cols-2 lg:gap-12">
           <div className="relative z-[1] text-center lg:text-left">
-            <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-gold-300 bg-gold-50 px-3.5 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-gold-700">
-              <HeartHandshake className="h-3.5 w-3.5" />
+            <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-gold-400 bg-gradient-to-r from-gold-100 via-gold-50 to-gold-100 px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-gold-800 shadow-sm ring-1 ring-gold-200/70">
+              <HeartHandshake className="h-3.5 w-3.5 text-gold-600" />
               Subhavivaham • பாரம்பரிய மதிப்புகளுடன்
             </p>
             <h1 className="font-display text-3xl font-semibold leading-[1.7] tracking-tight text-wine-800 sm:text-4xl sm:leading-[1.6] lg:text-5xl lg:leading-[1.4]">
