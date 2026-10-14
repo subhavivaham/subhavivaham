@@ -2,6 +2,12 @@ import type { Metadata } from "next";
 import { JathagamCalculator } from "@/components/jathagam/jathagam-calculator";
 import { isJathagamConfigured } from "@/features/jathagam/service";
 
+// rendered per request so the engine availability is read from the runtime
+// environment. if this page were statically prerendered, isJathagamConfigured()
+// would be frozen at build time, and a deploy whose build lacked
+// JATHAGAM_API_URL would keep serving the "being configured" fallback forever.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "ஜாதக பொருத்தம் — Subha Vivaham Matrimony",
   description:
