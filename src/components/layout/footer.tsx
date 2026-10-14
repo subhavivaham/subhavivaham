@@ -54,6 +54,7 @@ const contactLinks = [
 const socialLinks = [
   { label: "Instagram", href: BRAND.socials.instagram },
   { label: "Facebook", href: BRAND.socials.facebook },
+  { label: "WhatsApp", href: BRAND.socials.whatsapp },
   { label: "X (Twitter)", href: BRAND.socials.twitter },
 ];
 

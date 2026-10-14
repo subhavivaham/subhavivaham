@@ -32,6 +32,7 @@ export const BRAND = {
     instagram: "https://instagram.com/subhavivaham?rpxt=MThtNmw3MGN6YjJ5NQ%3D%3D&utm_source=qr",
     facebook: "https://www.facebook.com/share/1DvYi71ep3/?mibextid=wwXIfr",
     twitter: "https://x.com",
+    whatsapp: "https://wa.me/918508630290",
   },
 } as const;
 
