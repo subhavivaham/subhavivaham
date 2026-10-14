@@ -25,7 +25,7 @@ on conflict (id) do update
 
 insert into public.site_config (id, banner_text, banner_enabled, office_address) values
   ('main',
-   'சுப விவாகம் – தமிழ் திருமண தகவல் மையம், உங்கள் வாழ்க்கைத் துணையை இங்கே தேடுங்கள்',
+   'சுப விவாகம் – தமிழ் திருமண தகவல் மையம், உங்கள் வாழ்க்கைத் துணையை இங்கே தேடுங்கள், மணமகன் மற்றும் மணமகள் வரன்கள் – இலவசமாகப் பதிவு செய்யுங்கள், ஜாதகப் பொருத்தம் பார்த்து திருமணம் முடியுங்கள்',
    true,
    '3/58, Natarajar Sannathi Street, Vallanadu, Tuticorin - 628 252' || chr(10) ||
    '1/239, Sub Register Off Street, Murappanadu, Tuticorin - 628 252')
