@@ -11,12 +11,14 @@ import { FeaturedProfiles } from "@/components/home/featured-profiles";
 import { WeddingIntro } from "@/components/wedding-intro/wedding-intro";
 import { HomeSearchProvider } from "@/features/search/home-search";
 import { loadSearchProfiles } from "@/features/profiles/queries";
+import { pageSeo } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "சுப விவாஹம் — Subha Vivaham Matrimony",
   description:
     "தமிழ் பாரம்பரியத்தின் நம்பிக்கையுடன், நவீன தொழில்நுட்பத்தில் உங்கள் வாழ்க்கைத் துணையைத் தேடும் தளம். Verified profiles, jathagam matching and family-trust matrimony.",
-};
+  path: "/",
+});
 
 export default async function HomePage() {
   // unfiltered and uncapped: the featured grid narrows this in the browser, so

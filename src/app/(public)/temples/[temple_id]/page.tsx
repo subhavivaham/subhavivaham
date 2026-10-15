@@ -24,6 +24,7 @@ import { TempleGallery } from "@/components/temples/temple-gallery";
 import { Rule } from "@/components/ui/hero-plate";
 import { cn } from "@/lib/utils";
 import { isHttpUrl, type Temple } from "@/features/temples/types";
+import { pageSeo } from "@/lib/seo";
 
 // The shared CONTAINER stops at max-w-7xl, which leaves the map, the photo grid
 // and the timings table narrower than they need to be on a desktop. This is the
@@ -189,20 +190,20 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { temple_id } = await params;
   const temple = await fetchTempleById(temple_id);
-  if (!temple) return { title: "Temple not found — Subha Vivaham Matrimony" };
-  return {
+  if (!temple)
+    return { title: "Temple not found — Subha Vivaham Matrimony", robots: { index: false } };
+  // the cover is the one image a temple reliably has. shared without it, the
+  // link shows up as a bare title card in WhatsApp and every other chat app,
+  // which is where most of these links are actually opened. checked as a url
+  // because the admin can type one in by hand.
+  return pageSeo({
     title: `${temple.name} — Temples | Subha Vivaham Matrimony`,
     description:
       temple.deity ||
       `Timings, location and services at ${temple.name}, maintained by our own team.`,
-    // the cover is the one image a temple reliably has. shared without it, the
-    // link shows up as a bare title card in WhatsApp and every other chat app,
-    // which is where most of these links are actually opened. checked as a url
-    // because the admin can type one in by hand.
-    openGraph: isHttpUrl(temple.coverImage)
-      ? { images: [{ url: temple.coverImage }] }
-      : undefined,
-  };
+    path: `/temples/${temple.id}`,
+    image: isHttpUrl(temple.coverImage) ? temple.coverImage : undefined,
+  });
 }
 
 export default async function TempleDetailPage({

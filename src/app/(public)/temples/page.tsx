@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { HeroPlate, Rule } from "@/components/ui/hero-plate";
 import { CONTAINER } from "@/lib/constants";
 import { fetchTemples } from "@/lib/data/queries";
+import { pageSeo } from "@/lib/seo";
 
 // Cached and refreshed in the background rather than rebuilt per request. The
 // old force-dynamic guarded against a build that ran without the env vars
@@ -14,11 +15,12 @@ import { fetchTemples } from "@/lib/data/queries";
 // clears it immediately.
 export const revalidate = 300;
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "Temples — Subha Vivaham Matrimony",
   description:
     "Verified heritage temples across Tamil Nadu — deity, city, timings and contact for marriage blessings.",
-};
+  path: "/temples",
+});
 
 export default async function TemplesPage() {
   const temples = await fetchTemples();

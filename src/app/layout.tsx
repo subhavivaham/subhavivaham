@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Inter, Playfair_Display, Noto_Sans_Tamil } from "next/font/google";
 import "./globals.css";
 import { AppProviders } from "@/components/providers/app-providers";
+import { JsonLd } from "@/components/seo/json-ld";
+import { DEFAULT_OG_IMAGE, organizationJsonLd, websiteJsonLd } from "@/lib/seo";
+import { SITE_URL } from "@/lib/constants";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -21,9 +24,36 @@ const notoTamil = Noto_Sans_Tamil({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "சுப விவாஹம் — Subha Vivaham Matrimony",
   description:
     "தமிழ் பாரம்பரியத்தின் நம்பிக்கையுடன், நவீன தொழில்நுட்பத்தில் உங்கள் வாழ்க்கைத் துணையைத் தேடும் தளம். Verified profiles, jathagam matching and family-trust matrimony.",
+  keywords: [
+    "Tamil matrimony",
+    "Tamil marriage bureau",
+    "Subha Vivaham",
+    "subhavivaham",
+    "Tamil brides",
+    "Tamil grooms",
+    "jathagam porutham",
+    "natchathram porutham",
+    "ashtakoota matching",
+    "Tamil community matrimony",
+    "verified matrimonial profiles",
+    "Tamil Nadu matrimony",
+  ],
+  openGraph: {
+    siteName: "Subha Vivaham",
+    locale: "ta_IN",
+    type: "website",
+    url: SITE_URL,
+    images: [{ url: DEFAULT_OG_IMAGE }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    images: [DEFAULT_OG_IMAGE],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -34,6 +64,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </head>
       <body className="min-h-full flex flex-col bg-ivory-50 text-charcoal-900 antialiased">
+        <JsonLd data={organizationJsonLd()} />
+        <JsonLd data={websiteJsonLd()} />
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { CommunitiesHero } from "@/components/communities/communities-hero";
 import { CONTAINER } from "@/lib/constants";
 import { fetchCommunities, fetchProfiles } from "@/lib/data/queries";
+import { pageSeo } from "@/lib/seo";
 
 // Cached and refreshed in the background rather than rebuilt per request. The
 // old force-dynamic guarded against baking an empty list at build time;
@@ -10,11 +11,12 @@ import { fetchCommunities, fetchProfiles } from "@/lib/data/queries";
 // admin save clears them at once.
 export const revalidate = 300;
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "சமூகங்கள் — Subha Vivaham Matrimony",
   description:
     "Browse matrimonial profiles by community — Iyer, Iyengar, Chettiar, Mudaliar, Gounder, Thevar, Naidu and more.",
-};
+  path: "/communities",
+});
 
 export default async function CommunitiesPage() {
   const [communities, profiles] = await Promise.all([

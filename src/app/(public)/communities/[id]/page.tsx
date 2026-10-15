@@ -7,6 +7,7 @@ import { withMatch } from "@/features/profiles/queries";
 import { ProfileGrid } from "@/components/profile/profile-card";
 import { ProfileGateLink } from "@/components/profile/profile-gate-link";
 import { EmptyState } from "@/components/ui/states";
+import { pageSeo } from "@/lib/seo";
 import { CONTAINER } from "@/lib/constants";
 
 // the community and its members are read from the database; cached and refreshed
@@ -21,11 +22,12 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const community = (await fetchCommunities()).find((c) => c.id === id);
-  if (!community) return { title: "Community not found — Subha Vivaham" };
-  return {
+  if (!community) return { title: "Community not found — Subha Vivaham", robots: { index: false } };
+  return pageSeo({
     title: `${community.name} — Brides & Grooms | Subha Vivaham`,
     description: community.description,
-  };
+    path: `/communities/${community.id}`,
+  });
 }
 
 export default async function CommunityPage({

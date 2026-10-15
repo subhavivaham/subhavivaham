@@ -5,6 +5,7 @@ import { ArrowLeft, MapPin, Heart, Sprout } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CONTAINER } from "@/lib/constants";
 import { fetchStory } from "@/lib/data/queries";
+import { pageSeo } from "@/lib/seo";
 
 // a story slug is database data. without force-dynamic the page is still not
 // frozen at build time: with no generateStaticParams it renders on first request
@@ -19,11 +20,13 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const story = await fetchStory(id);
-  if (!story) return { title: "Story not found — Subha Vivaham" };
-  return {
+  if (!story) return { title: "Story not found — Subha Vivaham", robots: { index: false } };
+  return pageSeo({
     title: `${story.couple} — Success Story | Subha Vivaham`,
     description: story.tagline,
-  };
+    path: `/success-stories/${story.id}`,
+    type: "article",
+  });
 }
 
 export default async function StoryPage({ params }: { params: Promise<{ id: string }> }) {

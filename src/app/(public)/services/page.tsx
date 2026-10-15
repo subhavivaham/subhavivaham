@@ -6,17 +6,19 @@ import { HeroPlate, Rule } from "@/components/ui/hero-plate";
 import { CONTAINER } from "@/lib/constants";
 import { fetchServices } from "@/lib/data/queries";
 import { categoryOf } from "@/features/services/types";
+import { pageSeo } from "@/lib/seo";
 
 // Cached and refreshed in the background rather than rebuilt per request, so a
 // returning visitor does not wait on a vendor query each time. Every read is
 // tagged, so an admin save clears it immediately.
 export const revalidate = 300;
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "சேவைகள் — Subha Vivaham Matrimony",
   description:
     "Verified wedding vendors across southern districts — marriage halls, caterers, photographers, decorators, event managers and marriage bureaus.",
-};
+  path: "/services",
+});
 
 export default async function ServicesPage() {
   const services = await fetchServices();

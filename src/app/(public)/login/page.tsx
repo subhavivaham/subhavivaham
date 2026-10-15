@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { LoginForm } from "@/components/forms/login-form";
+import { pageSeo } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "Login — Subha Vivaham Matrimony",
   description: "Sign in to your Subha Vivaham account to view matches, messages and more.",
-};
+  path: "/login",
+  indexed: false,
+});
 
 export default async function LoginPage({
   searchParams,

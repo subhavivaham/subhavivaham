@@ -6,12 +6,14 @@ import { HeroPlate, Rule } from "@/components/ui/hero-plate";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { fetchPlans } from "@/lib/data/queries";
 import { cn } from "@/lib/utils";
+import { pageSeo } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "Membership — Subha Vivaham Matrimony",
   description:
     "Compare Free, Silver and Premium plans. Get more visibility and connect faster.",
-};
+  path: "/membership",
+});
 
 // prices, plan cards and compare rows all come from the membership_plans table,
 // so this page is rendered per request — a statically prerendered copy would

@@ -7,12 +7,14 @@ import { HeroPlate, Rule } from "@/components/ui/hero-plate";
 import { CONTAINER } from "@/lib/constants";
 import { coupleInitials } from "@/lib/utils";
 import { fetchStories } from "@/lib/data/queries";
+import { pageSeo } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "Success Stories — Subha Vivaham",
   description:
     "Real couples who found their person on Subha Vivaham — and the families who celebrated with them.",
-};
+  path: "/success-stories",
+});
 
 export default async function SuccessStoriesPage() {
   const successStories = await fetchStories();

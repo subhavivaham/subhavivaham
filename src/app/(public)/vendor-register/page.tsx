@@ -5,12 +5,14 @@ import { SERVICE_CATEGORY_LABELS, SERVICE_TYPE_LABELS, SERVICE_TYPES } from "@/f
 import { Button } from "@/components/ui/button";
 import { HeroPlate, Rule } from "@/components/ui/hero-plate";
 import { CONTAINER } from "@/lib/constants";
+import { pageSeo } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageSeo({
   title: "Vendor Register — Subha Vivaham Matrimony",
   description:
     "List your marriage hall, catering, photography, decoration or event business on Subha Vivaham and reach couples planning a Tamil wedding.",
-};
+  path: "/vendor-register",
+});
 
 const PROMISES = [
   {

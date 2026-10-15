@@ -1,6 +1,11 @@
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { getCurrentMember } from "@/lib/data/member-dal";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
+
+// the signed-in area holds private profiles, so nothing under it should be
+// indexed. set here rather than per page because every page below inherits it.
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const member = await getCurrentMember();
