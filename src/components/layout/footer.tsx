@@ -92,7 +92,7 @@ const socialLinks = [
   { label: "Instagram", href: BRAND.socials.instagram, Icon: InstagramIcon },
   { label: "Facebook", href: BRAND.socials.facebook, Icon: FacebookIcon },
   { label: "WhatsApp", href: BRAND.socials.whatsapp, Icon: WhatsAppIcon },
-  { label: "X (Twitter)", href: BRAND.socials.twitter, Icon: XIcon },
+  // { label: "X (Twitter)", href: BRAND.socials.twitter, Icon: XIcon },
 ];
 
 function FooterHeading({ children }: { children: React.ReactNode }) {
