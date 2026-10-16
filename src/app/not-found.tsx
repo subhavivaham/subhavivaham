@@ -5,7 +5,7 @@ import { CONTAINER } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "பக்கம் கிடைக்கவில்லை — Page Not Found | Subha Vivaham",
+  title: "Page Not Found | Subha Vivaham",
   description:
     "The page you are looking for could not be found. Explore profiles, communities and temples on Subha Vivaham Matrimony.",
   robots: { index: false, follow: false },
