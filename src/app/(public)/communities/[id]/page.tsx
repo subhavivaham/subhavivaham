@@ -3,7 +3,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, ArrowRight, UsersRound } from "lucide-react";
 import { fetchCommunities, fetchProfiles } from "@/lib/data/queries";
-import { withMatch } from "@/features/profiles/queries";
 import { ProfileGrid } from "@/components/profile/profile-card";
 import { ProfileGateLink } from "@/components/profile/profile-gate-link";
 import { EmptyState } from "@/components/ui/states";
@@ -44,9 +43,7 @@ export default async function CommunityPage({
   const community = communities.find((c) => c.id === id);
   if (!community) notFound();
 
-  const members = profiles
-    .filter((p) => p.community === community.name)
-    .map(withMatch);
+  const members = profiles.filter((p) => p.community === community.name);
 
   // a preview, not the list. the count in the heading stays the real total, and
   // the button below the grid is what opens the full set behind the login wall,

@@ -1,14 +1,6 @@
 import type { Profile } from "@/types";
 import type { SearchFilters, SortKey } from "@/features/search/types";
-import { profiles } from "@/features/profiles/data";
 import { PHOTO_QUOTA } from "@/lib/payments/quotas";
-
-export interface DashboardStats {
-  newMatches: number;
-  interestsReceived: number;
-  interestsSent: number;
-  profileViews: number;
-}
 
 const RELIGION_WEIGHT = 0.28;
 const LOCATION_WEIGHT = 0.16;
@@ -21,10 +13,11 @@ function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
 }
 
-export function computeMatchScore(
-  profile: Profile,
-  current: Profile = profiles[0]
-): number {
+// a score is always measured against one real member's own preferences, read
+// from the database. there is deliberately no bundled fallback row: without a
+// signed-in profile there is nothing to score against, so callers pass the
+// member's own row and nothing is attached when they have none.
+function computeMatchScore(profile: Profile, current: Profile): number {
   const pref = current.preference;
   const scores: number[] = [];
 
@@ -93,17 +86,16 @@ export function computeMatchScore(
   return clamp(base + jitter, 74, 99);
 }
 
-export function withMatch(profile: Profile): Profile {
-  if (profile.matchPercentage === undefined) {
-    return { ...profile, matchPercentage: computeMatchScore(profile) };
-  }
-  return profile;
+function withMatch(profile: Profile, current?: Profile): Profile {
+  if (!current || profile.matchPercentage !== undefined) return profile;
+  return { ...profile, matchPercentage: computeMatchScore(profile, current) };
 }
 
 export function filterProfiles(
   source: Profile[],
   filters: SearchFilters = {},
-  sort: SortKey = "recommended"
+  sort: SortKey = "recommended",
+  current?: Profile
 ): Profile[] {
   let result = source;
 
@@ -141,7 +133,7 @@ export function filterProfiles(
   if (filters.income) result = result.filter((p) => p.income === filters.income);
   if (filters.withPhoto) result = result.filter((p) => p.photos.length > 0);
 
-  result = result.map(withMatch);
+  if (current) result = result.map((p) => withMatch(p, current));
 
   switch (sort) {
     case "recommended":
@@ -166,14 +158,9 @@ export function filterProfiles(
   return result;
 }
 
-export function searchProfiles(
-  filters: SearchFilters = {},
-  sort: SortKey = "recommended"
-): Profile[] {
-  return filterProfiles(profiles, filters, sort);
-}
-
-// database first, seeded data as the fallback, filtering still client side
+// the rows are read from the database and then filtered and sorted in the
+// browser, so the filter controls stay instant. no percentage is attached here:
+// a public visitor has no preferences of their own to score against
 export async function loadSearchProfiles(
   filters: SearchFilters = {},
   sort: SortKey = "recommended"
@@ -182,17 +169,21 @@ export async function loadSearchProfiles(
   return filterProfiles(await fetchProfiles(), filters, sort);
 }
 
-export async function loadRecommendedMatches(limit = 24): Promise<Profile[]> {
+export async function loadRecommendedMatches(
+  current: Profile | undefined,
+  limit = 24
+): Promise<Profile[]> {
+  if (!current) return [];
   const { fetchProfiles } = await import("@/lib/data/queries");
   const allProfiles = await fetchProfiles();
-  const current = allProfiles.find(p => p.id === "p-praveen") || allProfiles[0];
-  if (!current) return [];
   const pref = current.preference;
   const filters: SearchFilters = {
     gender: current.gender === "male" ? "female" : "male",
     ageMin: pref.minAge,
     ageMax: pref.maxAge,
-    religion: pref.religion !== "Any" ? pref.religion : undefined,
+    // an unset pref_religion column maps to "", which must never become a
+    // filter that matches nobody
+    religion: pref.religion && pref.religion !== "Any" ? pref.religion : undefined,
     community: pref.communities.includes("Any") ? undefined : pref.communities[0],
     education: pref.education.includes("Any") ? undefined : pref.education[0],
     profession: pref.professions.includes("Any") ? undefined : pref.professions[0],
@@ -200,7 +191,8 @@ export async function loadRecommendedMatches(limit = 24): Promise<Profile[]> {
     smoking: pref.smoking,
     drinking: pref.drinking,
   };
-  return filterProfiles(allProfiles, filters, "recommended").slice(0, limit);
+  const candidates = allProfiles.filter((p) => p.id !== current.id);
+  return filterProfiles(candidates, filters, "recommended", current).slice(0, limit);
 }
 
 export async function loadProfile(id: string): Promise<Profile | undefined> {
@@ -215,54 +207,6 @@ export async function loadProfile(id: string): Promise<Profile | undefined> {
 export async function loadOwnProfile(id: string): Promise<Profile | undefined> {
   const { fetchOwnProfile } = await import("@/lib/data/queries");
   return (await fetchOwnProfile(id)) ?? undefined;
-}
-
-export function getRecommendedMatches(limit = 24): Profile[] {
-  const current = profiles[0];
-  const pref = current.preference;
-  const filters: SearchFilters = {
-    gender: current.gender === "male" ? "female" : "male",
-    ageMin: pref.minAge,
-    ageMax: pref.maxAge,
-    religion: pref.religion !== "Any" ? pref.religion : undefined,
-    community: pref.communities.includes("Any") ? undefined : pref.communities[0],
-    education: pref.education.includes("Any") ? undefined : pref.education[0],
-    profession: pref.professions.includes("Any") ? undefined : pref.professions[0],
-    diet: pref.diet,
-    smoking: pref.smoking,
-    drinking: pref.drinking,
-  };
-  return searchProfiles(filters, "recommended").slice(0, limit);
-}
-
-export function getNewMatches(limit = 8): Profile[] {
-  return searchProfiles({ gender: "female" }, "newest").slice(0, limit);
-}
-
-export function getNearbyMatches(limit = 8): Profile[] {
-  const nearby = profiles.filter(
-    (p) => p.city === profiles[0].city
-  );
-  return nearby.slice(0, limit).map(withMatch);
-}
-
-export function getRecentlyActive(limit = 8): Profile[] {
-  return searchProfiles({ gender: "female" }, "recently-active").slice(0, limit);
-}
-
-export function getFeaturedProfiles(limit = 4): Profile[] {
-  return profiles.slice(0, limit).map(withMatch);
-}
-
-export function getDashboardStats(): DashboardStats {
-  const received = 2;
-  const sent = 3;
-  return {
-    newMatches: 6,
-    interestsReceived: received,
-    interestsSent: sent,
-    profileViews: 42,
-  };
 }
 
 // the dashboard used to print a flat 80% and a fixed set of task chips. the

@@ -3,9 +3,10 @@
 import { useState, useEffect } from "react";
 import { ProfileGrid } from "@/components/profile/profile-card";
 import {
+  loadOwnProfile,
   loadRecommendedMatches,
-  computeMatchScore,
 } from "@/features/profiles/queries";
+import { useAuth } from "@/features/auth/auth-provider";
 import type { Profile } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -17,17 +18,27 @@ const matchTiers = [
 ];
 
 export function MatchesGrid() {
+  const { user, isLoading: authLoading } = useAuth();
   const [tier, setTier] = useState(0);
   const [matches, setMatches] = useState<(Profile & { score?: number })[]>([]);
 
+  const profileId = user?.profileId;
+
   useEffect(() => {
-    loadRecommendedMatches(24).then((results) => {
-      setMatches(results.map((p) => ({
-        ...p,
-        score: computeMatchScore(p),
-      })));
-    });
-  }, []);
+    if (authLoading || !profileId) return;
+    let cancelled = false;
+
+    void (async () => {
+      const own = await loadOwnProfile(profileId);
+      const results = await loadRecommendedMatches(own, 24);
+      if (cancelled) return;
+      setMatches(results.map((p) => ({ ...p, score: p.matchPercentage })));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, profileId]);
 
   const filtered = matches.filter(
     (m) => (m.score ?? 0) >= matchTiers[tier].min && (m.score ?? 0) <= matchTiers[tier].max

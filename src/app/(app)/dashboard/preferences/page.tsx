@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SlidersHorizontal, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/field";
 import { useToast } from "@/lib/state/toast-provider";
-import { profiles } from "@/features/profiles/data";
+import { loadOwnProfile } from "@/features/profiles/queries";
+import { useAuth } from "@/features/auth/auth-provider";
 import {
   RELIGIONS,
   MOTHER_TONGUES,
@@ -14,13 +15,29 @@ import {
   HEIGHTS,
   INDIAN_STATES,
 } from "@/lib/constants";
-import type { Diet, Drink, Smoke } from "@/types";
+import type { Diet, Drink, Smoke, Profile } from "@/types";
 
-export default function PartnerPreferencesPage() {
-  const pref = profiles[0].preference;
-  const toast = useToast();
+// the form is a comma-separated mirror of the preference arrays on the row, so
+// it is shaped from the member's own profile rather than from a bundled example
+interface PreferenceForm {
+  minAge: number;
+  maxAge: number;
+  minHeight: number;
+  maxHeight: number;
+  religion: string;
+  motherTongues: string;
+  education: string;
+  professions: string;
+  locations: string;
+  diet: Diet;
+  smoking: Smoke;
+  drinking: Drink;
+  maritalStatuses: string;
+}
 
-  const [form, setForm] = useState({
+function formFrom(profile: Profile): PreferenceForm {
+  const pref = profile.preference;
+  return {
     minAge: pref.minAge,
     maxAge: pref.maxAge,
     minHeight: pref.minHeight,
@@ -34,16 +51,68 @@ export default function PartnerPreferencesPage() {
     smoking: pref.smoking,
     drinking: pref.drinking,
     maritalStatuses: pref.maritalStatuses.join(", "),
-  });
+  };
+}
 
-  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
-    setForm((f) => ({ ...f, [key]: value }));
+export default function PartnerPreferencesPage() {
+  const { user, isLoading: authLoading } = useAuth();
+  const toast = useToast();
+
+  // the signed-in member's own row. the id travels with the result so a slow
+  // response for a previous member can never be rendered for the current one
+  const profileId = user?.profileId;
+  const [fetched, setFetched] = useState<{ id: string; profile?: Profile } | null>(null);
+  const [form, setForm] = useState<PreferenceForm | null>(null);
+
+  useEffect(() => {
+    if (authLoading || !profileId) return;
+    let cancelled = false;
+
+    void loadOwnProfile(profileId).then((found) => {
+      if (cancelled) return;
+      setFetched({ id: profileId, profile: found });
+      setForm(found ? formFrom(found) : null);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, profileId]);
+
+  const profile = fetched && fetched.id === profileId ? fetched.profile : undefined;
+  const loaded = Boolean(fetched && fetched.id === profileId);
+
+  const set = <K extends keyof PreferenceForm>(key: K, value: PreferenceForm[K]) =>
+    setForm((f) => (f ? { ...f, [key]: value } : f));
 
   const save = () => {
     toast("Partner preferences saved.", "success");
   };
 
   const ageOptions = Array.from({ length: 38 }, (_, i) => 18 + i);
+
+  if (authLoading || (profileId && !loaded)) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-wine-700 border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (!profile || !form) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="flex items-center gap-2 font-display text-2xl font-semibold tracking-tight text-charcoal-900 sm:text-3xl">
+            <SlidersHorizontal className="h-6 w-6 text-wine-600" /> Partner Preferences
+          </h1>
+          <p className="mt-1 text-charcoal-500">
+            We could not find your profile details yet. Please refresh in a moment.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -108,6 +177,9 @@ export default function PartnerPreferencesPage() {
             value={form.religion}
             onChange={(e) => set("religion", e.target.value)}
           >
+            <option value="" disabled>
+              Select religion
+            </option>
             {RELIGIONS.map((r) => (
               <option key={r} value={r}>
                 {r}
@@ -217,24 +289,7 @@ export default function PartnerPreferencesPage() {
       </section>
 
       <div className="flex justify-end gap-3">
-        <Button
-          variant="outline"
-          onClick={() => setForm({
-            minAge: pref.minAge,
-            maxAge: pref.maxAge,
-            minHeight: pref.minHeight,
-            maxHeight: pref.maxHeight,
-            religion: pref.religion,
-            motherTongues: pref.motherTongues.join(", "),
-            education: pref.education.join(", "),
-            professions: pref.professions.join(", "),
-            locations: pref.locations.join(", "),
-            diet: pref.diet,
-            smoking: pref.smoking,
-            drinking: pref.drinking,
-            maritalStatuses: pref.maritalStatuses.join(", "),
-          })}
-        >
+        <Button variant="outline" onClick={() => setForm(formFrom(profile))}>
           Reset
         </Button>
         <Button onClick={save}>

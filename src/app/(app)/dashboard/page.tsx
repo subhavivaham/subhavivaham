@@ -57,12 +57,10 @@ export default function DashboardPage() {
   const firstName = user?.name.split(" ")[0] ?? "Praveen";
 
   // the New Matches count is the same read the /matches page makes, so the card
-  // and the tab can never disagree on the number. while it is still loading the
-  // value stays 0 on both the server and the first client render.
+  // and the tab can never disagree on the number. it needs the member's own row
+  // to know what to recommend, so it is fetched together with the profile below
+  // and stays at 0 until that read answers
   const [matchCount, setMatchCount] = useState<number | null>(null);
-  useEffect(() => {
-    void loadRecommendedMatches(24).then((results) => setMatchCount(results.length));
-  }, []);
 
   // the signed-in member's own row, the same read the profile page makes. the id
   // travels with the result so a slow response for a previous member can never
@@ -80,6 +78,11 @@ export default function DashboardPage() {
         id: profileId,
         completion: found ? computeProfileCompletion(found, quota) : undefined,
       });
+      if (found) {
+        void loadRecommendedMatches(found, 24).then((results) => {
+          if (!cancelled) setMatchCount(results.length);
+        });
+      }
     });
 
     return () => {

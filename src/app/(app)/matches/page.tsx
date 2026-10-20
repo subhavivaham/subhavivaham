@@ -7,9 +7,10 @@ import { EmptyState } from "@/components/ui/states";
 import { ProfileCardSkeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
+  loadOwnProfile,
   loadRecommendedMatches,
-  computeMatchScore,
 } from "@/features/profiles/queries";
+import { useAuth } from "@/features/auth/auth-provider";
 import type { Profile } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -36,20 +37,41 @@ function useMounted(): boolean {
 }
 
 export default function MatchesPage() {
+  const { user, isLoading: authLoading } = useAuth();
   const [tier, setTier] = useState(0);
   const [loading, setLoading] = useState(true);
   const [matches, setMatches] = useState<(Profile & { score?: number })[]>([]);
   const mounted = useMounted();
 
+  // the member's own row decides which profiles are recommended, so it is read
+  // first and handed to the loader. until the session settles nothing is
+  // claimed: an anonymous visitor gets an empty list rather than someone
+  // else's preferences
+  const profileId = user?.profileId;
+
   useEffect(() => {
-    loadRecommendedMatches(24).then((results) => {
-      setMatches(results.map((p) => ({
-        ...p,
-        score: computeMatchScore(p),
-      })));
+    if (authLoading) return;
+    let cancelled = false;
+
+    if (!profileId) {
+      setMatches([]);
       setLoading(false);
-    });
-  }, []);
+      return;
+    }
+
+    setLoading(true);
+    void (async () => {
+      const own = await loadOwnProfile(profileId);
+      const results = await loadRecommendedMatches(own, 24);
+      if (cancelled) return;
+      setMatches(results.map((p) => ({ ...p, score: p.matchPercentage })));
+      setLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, profileId]);
 
   const filtered = matches.filter(
     (m) => (m.score ?? 0) >= matchTiers[tier].min && (m.score ?? 0) <= matchTiers[tier].max
