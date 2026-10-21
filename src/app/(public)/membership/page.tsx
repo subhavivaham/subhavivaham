@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ArrowDown, Check, Sparkles } from "lucide-react";
+import { ArrowDown, Check, Sparkles, X } from "lucide-react";
 import { MembershipPlans } from "@/components/membership/membership-plans";
 import { Button } from "@/components/ui/button";
 import { HeroPlate, Rule } from "@/components/ui/hero-plate";
@@ -169,7 +169,11 @@ function cell(value: boolean | string): React.ReactNode {
     );
   }
   if (value === false) {
-    return <span className="text-charcoal-300">—</span>;
+    return (
+      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-red-50 text-red-500">
+        <X className="h-3.5 w-3.5" />
+      </span>
+    );
   }
   return <span className="text-xs font-medium text-charcoal-600">{value}</span>;
 }
