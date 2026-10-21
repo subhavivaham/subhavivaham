@@ -1,35 +1,45 @@
-drop policy if exists profile_photos_storage_read on storage.objects;
-drop policy if exists profile_photos_storage_insert on storage.objects;
-drop policy if exists profile_photos_storage_update on storage.objects;
-drop policy if exists profile_photos_storage_delete on storage.objects;
-drop policy if exists payment_screenshots_storage_read on storage.objects;
-drop policy if exists payment_screenshots_storage_insert on storage.objects;
-drop policy if exists payment_screenshots_storage_update on storage.objects;
-drop policy if exists payment_screenshots_storage_delete on storage.objects;
-drop policy if exists temple_images_storage_read on storage.objects;
-drop policy if exists temple_images_storage_insert on storage.objects;
-drop policy if exists temple_images_storage_update on storage.objects;
-drop policy if exists temple_images_storage_delete on storage.objects;
-drop table if exists public.interests cascade;
-drop table if exists public.profile_photos cascade;
-drop table if exists public.membership_payments cascade;
-drop table if exists public.subscriptions cascade;
-drop table if exists public.membership_plans cascade;
-drop table if exists public.profiles cascade;
-drop table if exists public.profile_details cascade;
-drop trigger if exists trg_pin_user_privileges on public.users;
-drop function if exists public.pin_user_privileges();
-drop table if exists public.users cascade;
-drop table if exists public.communities cascade;
-drop table if exists public.site_config cascade;
-drop table if exists public.success_stories cascade;
-drop table if exists public.service_providers cascade;
-drop table if exists public.temple_services cascade;
-drop table if exists public.temple_festivals cascade;
-drop table if exists public.temple_images cascade;
-drop table if exists public.temples cascade;
-drop function if exists public.enforce_temple_image_cap();
-drop function if exists public.registration_email_taken(text);
-drop function if exists public.registration_phone_taken(text);
-drop function if exists public.owns_profile_folder(text);
-drop function if exists public.owns_user_folder(text);
+-- Subha Vivaham - MySQL teardown (drops everything table_creation_mysql.sql creates)
+-- Run only to reset a database. Order matters: child tables before parents.
+-- There is no RLS/policy layer in MySQL, so nothing here mirrors the old
+-- Postgres storage policies - authorization lives in the application.
+
+-- ---------------------------------------------------------------------------
+-- triggers first (they reference the tables below)
+-- ---------------------------------------------------------------------------
+drop trigger if exists temple_images_cap;
+drop trigger if exists trg_touch_users;
+drop trigger if exists trg_touch_communities;
+drop trigger if exists trg_touch_profiles;
+drop trigger if exists trg_touch_interests;
+drop trigger if exists trg_touch_subscriptions;
+drop trigger if exists trg_touch_payments;
+drop trigger if exists trg_touch_stories;
+drop trigger if exists trg_touch_temples;
+drop trigger if exists trg_touch_temple_services;
+drop trigger if exists trg_touch_temple_festivals;
+drop trigger if exists trg_touch_service_providers;
+
+-- ---------------------------------------------------------------------------
+-- child tables first, then parents
+-- ---------------------------------------------------------------------------
+drop table if exists profile_photos;
+drop table if exists interests;
+drop table if exists temple_images;
+drop table if exists temple_festivals;
+drop table if exists temple_services;
+drop table if exists membership_payments;
+drop table if exists subscriptions;
+drop table if exists sessions;
+drop table if exists profiles;
+drop table if exists service_providers;
+drop table if exists temples;
+drop table if exists membership_plans;
+drop table if exists success_stories;
+drop table if exists communities;
+drop table if exists site_config;
+drop table if exists users;
+
+-- ---------------------------------------------------------------------------
+-- database itself (optional - uncomment to remove the schema entirely)
+-- ---------------------------------------------------------------------------
+-- drop database if exists subhavivaham;

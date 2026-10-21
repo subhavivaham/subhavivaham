@@ -118,7 +118,6 @@ export function VendorRegisterForm() {
               required
               maxLength={200}
               placeholder="e.g. 12, Gandhi Nagar, Tirunelveli Main Road"
-              hint="Where the hall is, so families can find it without a phone call."
               error={state.errors?.address}
             />
           </div>
@@ -143,7 +142,6 @@ export function VendorRegisterForm() {
             rows={5}
             className="min-h-[88px]"
             placeholder="Capacity, services offered…"
-            hint="Shown in full on your public listing."
             error={state.errors?.details}
           />
         </div>
