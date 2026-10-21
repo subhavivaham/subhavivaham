@@ -50,7 +50,7 @@ import {
 } from "@/components/admin/shared";
 import { useToast } from "@/lib/state/toast-provider";
 import { PAYMENT_SCREENSHOT_ACCEPT } from "@/lib/constants";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 
 type SubFilter = "all" | SubscriptionStatus;
 
@@ -598,7 +598,7 @@ export function MembershipsManager({
                 {s.amount === 0 ? "—" : `₹${s.amount.toLocaleString("en-IN")}`}
               </Cell>
               <Cell className="whitespace-nowrap text-charcoal-500">
-                {s.renewsOn ? new Date(s.renewsOn).toLocaleDateString() : "—"}
+                {s.renewsOn ? formatDate(s.renewsOn) : "—"}
               </Cell>
               <Cell>
                 <Pill tone={SUB_TONE[s.status]}>{s.status}</Pill>
@@ -651,6 +651,7 @@ export function MembershipsManager({
         open={planModal}
         onClose={() => setPlanModal(false)}
         size="md"
+        dismissOnBackdrop={false}
         title={planForm.id ? `Edit ${planForm.label}` : "Add membership plan"}
         description="Changes are reflected on the public membership page immediately."
       >
@@ -768,6 +769,7 @@ export function MembershipsManager({
         open={addSubOpen}
         onClose={() => setAddSubOpen(false)}
         size="sm"
+        dismissOnBackdrop={false}
         title="Add subscription"
         description="Assign a plan to an existing member."
       >

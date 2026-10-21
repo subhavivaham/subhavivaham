@@ -28,7 +28,7 @@ import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { IconAction, RowActions } from "@/components/admin/row-actions";
 import { FilterTabs, PageHeader, Pagination, SearchInput } from "@/components/admin/shared";
 import { useToast } from "@/lib/state/toast-provider";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import {
   approveServiceAction,
   createServiceAction,
@@ -519,7 +519,7 @@ export function ServicesManager({
                         <div className="min-w-0">
                           <dt className="text-xs text-charcoal-400">Added</dt>
                           <dd className="whitespace-nowrap text-sm font-medium text-charcoal-700">
-                            {new Date(p.addedAt).toLocaleDateString()}
+                            {formatDate(p.addedAt)}
                           </dd>
                         </div>
                         <div className="min-w-0">
@@ -554,7 +554,7 @@ export function ServicesManager({
                 <Cell className="text-charcoal-600">{p.city}</Cell>
                 <Cell className="whitespace-nowrap text-charcoal-600">{p.phone}</Cell>
                 <Cell className="whitespace-nowrap text-charcoal-400">
-                  {new Date(p.addedAt).toLocaleDateString()}
+                  {formatDate(p.addedAt)}
                 </Cell>
                 <Cell>{statusPill(p)}</Cell>
                 <Cell>{rowActions(p)}</Cell>
@@ -583,6 +583,7 @@ export function ServicesManager({
         open={modalOpen}
         onClose={closeModal}
         size="md"
+        dismissOnBackdrop={false}
         title={editing ? `Edit ${editing.name}` : "Add new provider"}
         description={
           editing

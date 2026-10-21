@@ -1,10 +1,7 @@
-// this module reaches next/headers through getSupabaseServer, so a static import
-// from a client component fails the build the same way an explicit server-only
-// marker would, without taking on the extra dependency
 import { cache } from "react";
 import { redirect } from "next/navigation";
-import type { User } from "@supabase/supabase-js";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { getSessionUser } from "@/lib/auth/session";
+import { q1 } from "@/lib/db";
 
 export const ADMIN_CLAIM = "admin";
 
@@ -14,38 +11,19 @@ export type AdminIdentity = {
   name: string;
 };
 
-// admin is recognised by a claim baked into the access token, never by a
-// hardcoded email, so the check survives a password change and is validated on
-// the server rather than trusted from the client
-function isAdmin(user: User | null): boolean {
-  return user?.app_metadata?.role === ADMIN_CLAIM;
-}
-
+// admin is recognised by the role column on public.users, validated from the
+// session cookie against the database rather than trusted from the client
 export const getCurrentAdmin = cache(async (): Promise<AdminIdentity | null> => {
-  let supabase;
-  try {
-    supabase = await getSupabaseServer();
-  } catch {
-    return null;
-  }
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!isAdmin(user)) return null;
+  const session = await getSessionUser();
+  if (!session || session.role !== ADMIN_CLAIM) return null;
 
   // best effort: the display name lives on public.users, but a missing or
   // renamed row must never turn a valid session into a sign-in failure
-  let name = user!.email ?? "";
-  const { data: row } = await supabase
-    .from("users")
-    .select("name")
-    .eq("email", user!.email ?? "")
-    .maybeSingle();
+  let name = session.email;
+  const row = await q1<{ name: string }>("select name from users where email = ?", [session.email]);
   if (row?.name) name = row.name;
 
-  return { authUserId: user!.id, email: user!.email ?? "", name };
+  return { authUserId: session.authUserId, email: session.email, name };
 });
 
 // every server component that touches admin data and every server action that

@@ -5,13 +5,14 @@
 // against the bank statement and approving the request is what actually grants
 // the plan. nothing here activates a membership on its own.
 //
-// the row is written with the member's own session, so rls is the boundary:
-// membership_payments only admits an insert whose user_id is the caller and
-// whose status is pinned to 'pending', so a forged payload cannot mark itself
-// approved.
+// mysql has no row level security, so the member identity is taken from the
+// session and every write is explicitly scoped to that user_id; status is
+// pinned to 'pending' here so a forged payload cannot mark itself approved.
 import { revalidatePath } from "next/cache";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { randomUUID } from "crypto";
+import { q1, run } from "@/lib/db";
 import { assertMember } from "@/lib/data/member-dal";
+import { saveUpload, deleteUpload } from "@/lib/uploads";
 import {
   MAX_PAYMENT_SCREENSHOT_BYTES,
   PAYMENT_SCREENSHOT_BUCKET,
@@ -22,10 +23,9 @@ import {
 
 export type PaymentRequestResult = { ok: true } | { ok: false; error: string };
 
-// the id shown on the admin queue and quoted in support. short and prefixed so
-// it reads as a payment rather than a subscription id.
+// the id shown on the admin queue and quoted in support
 function newPaymentId(): string {
-  return `pay-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  return `pay-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
 
 export async function submitPaymentRequest(
@@ -50,33 +50,23 @@ export async function submitPaymentRequest(
     return { ok: false, error: paymentScreenshotSizeError(file.size) };
   }
 
-  const supabase = await getSupabaseServer();
-
   // the price is read here rather than trusted from the browser, so a tampered
   // payload cannot file a request for a rupee.
-  const { data: plan, error: planError } = await supabase
-    .from("membership_plans")
-    .select("id, label, price")
-    .eq("id", planId)
-    .maybeSingle();
-  if (planError) return { ok: false, error: `Could not load the plan: ${planError.message}` };
+  const plan = await q1<{ id: string; label: string; price: number }>(
+    "select id, label, price from membership_plans where id = ?",
+    [planId]
+  );
   if (!plan) return { ok: false, error: "That plan is no longer available." };
   if (Number(plan.price) <= 0) {
     return { ok: false, error: "This plan does not need a payment." };
   }
 
-  // one pending request per member per plan. the member's own read policy lets
-  // this lookup run under their session, and catching it here stops a second
-  // screenshot from being uploaded and a duplicate row filed on top of the first
-  // while the admin still has the original to reconcile.
-  const { data: existing } = await supabase
-    .from("membership_payments")
-    .select("payment_id")
-    .eq("user_id", member.userId)
-    .eq("plan", plan.id)
-    .eq("status", "pending")
-    .limit(1)
-    .maybeSingle();
+  // one pending request per member per plan: a second screenshot must not be
+  // uploaded and filed while the admin still has the original to reconcile.
+  const existing = await q1(
+    "select payment_id from membership_payments where user_id = ? and plan = ? and status = 'pending' limit 1",
+    [member.userId, plan.id]
+  );
   if (existing) {
     return {
       ok: false,
@@ -85,32 +75,22 @@ export async function submitPaymentRequest(
     };
   }
 
-  // the first folder is the member's user_id, which is exactly what the storage
-  // insert policy checks, so a member can only ever write under their own prefix.
-  const path = `${member.userId}/${crypto.randomUUID()}.${photoExtension(file.type)}`;
+  // the first folder is the member's user_id, so a member can only ever write
+  // under their own prefix
+  const key = `${member.userId}/${randomUUID()}.${photoExtension(file.type)}`;
+  const screenshotUrl = await saveUpload(PAYMENT_SCREENSHOT_BUCKET, key, file, file.type);
 
-  const { error: uploadError } = await supabase.storage
-    .from(PAYMENT_SCREENSHOT_BUCKET)
-    .upload(path, file, { contentType: file.type, upsert: false });
-  if (uploadError) {
-    return { ok: false, error: `Could not upload the screenshot: ${uploadError.message}` };
-  }
-
-  const { error: insertError } = await supabase.from("membership_payments").insert({
-    payment_id: newPaymentId(),
-    user_id: member.userId,
-    plan: plan.id,
-    plan_name: plan.label,
-    member_name: member.name,
-    amount: Number(plan.price),
-    screenshot_path: path,
-    status: "pending",
-  });
-  if (insertError) {
+  try {
+    await run(
+      "insert into membership_payments (payment_id, user_id, plan, plan_name, member_name, amount, screenshot_path, status) " +
+        "values (?, ?, ?, ?, ?, ?, ?, 'pending')",
+      [newPaymentId(), member.userId, plan.id, plan.label, member.name, Number(plan.price), screenshotUrl]
+    );
+  } catch (error) {
     // the row is the record the admin reconciles against, so a failed insert
     // must not leave a screenshot with nothing pointing at it
-    await supabase.storage.from(PAYMENT_SCREENSHOT_BUCKET).remove([path]);
-    return { ok: false, error: `Could not record your payment: ${insertError.message}` };
+    await deleteUpload(PAYMENT_SCREENSHOT_BUCKET, key);
+    return { ok: false, error: `Could not record your payment: ${error instanceof Error ? error.message : "unknown error"}` };
   }
 
   revalidatePath("/membership");

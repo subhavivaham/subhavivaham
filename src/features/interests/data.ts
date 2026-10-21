@@ -1,10 +1,9 @@
 // the member's own interest lists, read from public.interests.
 //
 // a row there is the record: from_profile_id, to_profile_id, a status the
-// recipient moves, an optional message and the timestamps. the read policies in
-// table_policies.sql already scope the table to rows where the member is one of
-// the two profiles (or is an admin), so these queries do not filter by owner -
-// they only pick which side of the pair the member is on.
+// recipient moves, an optional message and the timestamps. every query is
+// explicitly scoped to the member's own profiles.uuid — mysql has no row level
+// security, so that filter is the whole boundary.
 //
 // profiles.interested_profile is still read, and still written by sendInterest.
 // it is the sender's own address book of who they have contacted and the check
@@ -13,26 +12,20 @@
 // below rather than the array being dropped, because members who sent an
 // interest before the table was wired up only have the array and would otherwise
 // watch their sent list empty out.
-//
-// reads go through the cookie-backed client: which profile is "mine" is only
-// knowable from the session. getSupabaseServer reaches next/headers, so this
-// module is server-only.
-import { getSupabaseServer } from "@/lib/supabase/server";
 import { getCurrentMember } from "@/lib/data/member-dal";
-import { toProfile, type ProfilePhotoRow, type ProfileRow } from "@/lib/data/mappers";
+import { q, q1 } from "@/lib/db";
+import { jsonList, toProfile, type ProfilePhotoRow, type ProfileRow } from "@/lib/data/mappers";
 import type { Interest, InterestStatus, Profile } from "@/types";
 
 type Row = Record<string, unknown>;
 
-// the counterpart is the other end of the pair, so one query per side of the
-// relationship and both are keyed off the member's own profiles.uuid
 interface InterestRow extends Row {
   id: string;
   from_profile_id: string;
   to_profile_id: string;
   status: InterestStatus;
   message: string | null;
-  viewed: boolean;
+  viewed: number;
   created_at: string;
 }
 
@@ -54,9 +47,8 @@ function empty(): { received: Interest[]; sent: Interest[] } {
 
 export type MemberInterests = Awaited<ReturnType<typeof fetchMemberInterests>>;
 
-// newest first. created_at is only guaranteed non-null once
-// migrations/0002_interest_tracking.sql has run, so an unstamped row sorts last
-// instead of the comparison having to special-case null
+// newest first. an unstamped row sorts last instead of the comparison having to
+// special-case null
 const byNewest = (a: Interest, b: Interest) =>
   (b.createdAt || "").localeCompare(a.createdAt || "");
 
@@ -67,39 +59,24 @@ export async function fetchMemberInterests(): Promise<{
   const member = await getCurrentMember();
   if (!member?.profileUuid) return empty();
 
-  const supabase = await getSupabaseServer();
-
-  const [receivedRes, sentRes] = await Promise.all([
-    supabase
-      .from("interests")
-      .select("*")
-      .eq("to_profile_id", member.profileUuid)
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("interests")
-      .select("*")
-      .eq("from_profile_id", member.profileUuid)
-      .order("created_at", { ascending: false }),
+  const [receivedRows, sentRows, ownRow] = await Promise.all([
+    q<InterestRow>(
+      "select * from interests where to_profile_id = ? order by created_at desc",
+      [member.profileUuid]
+    ),
+    q<InterestRow>(
+      "select * from interests where from_profile_id = ? order by created_at desc",
+      [member.profileUuid]
+    ),
+    q1<{ interested_profile: string[] | null }>(
+      "select interested_profile from profiles where user_id = ?",
+      [member.userId]
+    ),
   ]);
 
-  if (receivedRes.error) throw new Error(`interests: ${receivedRes.error.message}`);
-  if (sentRes.error) throw new Error(`interests: ${sentRes.error.message}`);
-
-  const receivedRows = (receivedRes.data ?? []) as unknown as InterestRow[];
-  const sentRows = (sentRes.data ?? []) as unknown as InterestRow[];
-
-  // the array still holds sends made before the table was wired up
-  const { data: ownRow } = await supabase
-    .from("profiles")
-    .select("interested_profile")
-    .eq("user_id", member.userId)
-    .maybeSingle();
-
-  const legacyIds = Array.isArray(
-    (ownRow as unknown as { interested_profile?: string[] | null } | null)?.interested_profile
-  )
-    ? ((ownRow as unknown as { interested_profile: string[] }).interested_profile ?? []).filter(Boolean)
-    : [];
+  // the array still holds sends made before the table was wired up. it is stored
+  // as json, so it may arrive as a string, a parsed array, or null.
+  const legacyIds = jsonList(ownRow?.interested_profile).filter(Boolean);
 
   // resolve every counterpart in one round trip: the public profile_id of the
   // other end, which is what the array holds and what /profile/[id] links to
@@ -112,26 +89,24 @@ export async function fetchMemberInterests(): Promise<{
 
   const profilesByUuid = new Map<string, ProfileRow>();
   if (counterpartUuids.length > 0) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .in("id", counterpartUuids);
-    if (error) throw new Error(`profiles: ${error.message}`);
-    for (const row of (data ?? []) as unknown as ProfileRow[]) {
-      profilesByUuid.set(row.id, row);
-    }
+    const placeholders = counterpartUuids.map(() => "?").join(",");
+    const rows = await q<ProfileRow>(
+      `select * from profiles where id in (${placeholders})`,
+      counterpartUuids
+    );
+    for (const row of rows) profilesByUuid.set(row.id, row);
   }
 
   // one photo read for both lists rather than one per row
   let photosByProfile = new Map<string, ProfilePhotoRow[]>();
   if (profilesByUuid.size > 0) {
-    const { data, error } = await supabase
-      .from("profile_photos")
-      .select("*")
-      .in("profile_id", [...profilesByUuid.keys()])
-      .order("sort_order");
-    if (error) throw new Error(`profile_photos: ${error.message}`);
-    photosByProfile = groupPhotos((data ?? []) as unknown as ProfilePhotoRow[]);
+    const placeholders = [...profilesByUuid.keys()].map(() => "?").join(",");
+    photosByProfile = groupPhotos(
+      await q<ProfilePhotoRow>(
+        `select * from profile_photos where profile_id in (${placeholders}) order by sort_order`,
+        [...profilesByUuid.keys()]
+      )
+    );
   }
 
   const build = (row: InterestRow, otherUuid: string, direction: Interest["direction"]): Interest | null => {
@@ -167,14 +142,23 @@ export async function fetchMemberInterests(): Promise<{
   // an array-only send has no row, so no status and no date. it is appended
   // after the tracked ones with a blank createdAt, which sorts it last.
   if (legacyIds.length > 0) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .in("profile_id", legacyIds);
-    if (error) throw new Error(`profiles: ${error.message}`);
+    const placeholders = legacyIds.map(() => "?").join(",");
+    const legacyRows = await q<ProfileRow>(
+      `select * from profiles where profile_id in (${placeholders})`,
+      legacyIds
+    );
 
-    const legacyRows = (data ?? []) as unknown as ProfileRow[];
-    const extraPhotos = await readPhotos(supabase, legacyRows.map((row) => row.id));
+    const photoUuids = legacyRows.map((row) => row.id);
+    let extraPhotos = new Map<string, ProfilePhotoRow[]>();
+    if (photoUuids.length > 0) {
+      const photoPlaceholders = photoUuids.map(() => "?").join(",");
+      extraPhotos = groupPhotos(
+        await q<ProfilePhotoRow>(
+          `select * from profile_photos where profile_id in (${photoPlaceholders}) order by sort_order`,
+          photoUuids
+        )
+      );
+    }
 
     for (const row of legacyRows) {
       // already covered by a row in public.interests, which carries the real
@@ -192,20 +176,4 @@ export async function fetchMemberInterests(): Promise<{
   }
 
   return { received, sent };
-}
-
-// split out so the legacy path can fetch its own gallery without repeating the
-// error handling, and so a member with no legacy sends issues no query at all
-async function readPhotos(
-  supabase: Awaited<ReturnType<typeof getSupabaseServer>>,
-  profileUuids: string[],
-): Promise<Map<string, ProfilePhotoRow[]>> {
-  if (profileUuids.length === 0) return new Map();
-  const { data, error } = await supabase
-    .from("profile_photos")
-    .select("*")
-    .in("profile_id", profileUuids)
-    .order("sort_order");
-  if (error) throw new Error(`profile_photos: ${error.message}`);
-  return groupPhotos((data ?? []) as unknown as ProfilePhotoRow[]);
 }

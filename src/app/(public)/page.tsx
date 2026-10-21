@@ -10,7 +10,7 @@ import { FinalCta } from "@/components/home/cta";
 import { FeaturedProfiles } from "@/components/home/featured-profiles";
 import { WeddingIntro } from "@/components/wedding-intro/wedding-intro";
 import { HomeSearchProvider } from "@/features/search/home-search";
-import { loadSearchProfiles } from "@/features/profiles/queries";
+import { loadSearchProfiles } from "@/features/profiles/loaders";
 import { pageSeo } from "@/lib/seo";
 
 export const metadata: Metadata = pageSeo({

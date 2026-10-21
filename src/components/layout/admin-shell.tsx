@@ -75,7 +75,7 @@ export function AdminShell({
     </Link>
   ));
 
-  // clears the real Supabase session cookie, then the server action redirects
+  // clears the sv_session cookie, then the server action redirects
   const signOut = () => startSignOut(() => void adminSignOut());
 
   const displayName = adminName || adminEmail || BRAND.name;

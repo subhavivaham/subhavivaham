@@ -2,10 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { ProfileGrid } from "@/components/profile/profile-card";
-import {
-  loadOwnProfile,
-  loadRecommendedMatches,
-} from "@/features/profiles/queries";
+import { loadOwnProfile, loadRecommendedMatches } from "@/features/profiles/loaders";
 import { useAuth } from "@/features/auth/auth-provider";
 import type { Profile } from "@/types";
 import { cn } from "@/lib/utils";

@@ -1,4 +1,5 @@
-import { forwardRef, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { forwardRef, useId, useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function FieldShell({
@@ -47,6 +48,32 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           {...props}
         />
       </FieldShell>
+    );
+  }
+);
+
+// a password field with a show/hide eye: the admin prefills the house default,
+// and the toggle is how they check it matches what they mean to hand over
+export const PasswordInput = forwardRef<HTMLInputElement, InputProps>(
+  function PasswordInput({ className, ...props }, ref) {
+    const [show, setShow] = useState(false);
+    return (
+      <div className="relative">
+        <Input
+          ref={ref}
+          {...props}
+          type={show ? "text" : "password"}
+          className={cn("pr-11", className)}
+        />
+        <button
+          type="button"
+          onClick={() => setShow((s) => !s)}
+          aria-label={show ? "Hide password" : "Show password"}
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded-lg p-2 text-charcoal-400 transition-colors hover:bg-charcoal-50 hover:text-charcoal-700"
+        >
+          {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
     );
   }
 );

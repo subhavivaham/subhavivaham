@@ -1,6 +1,6 @@
 import type { Profile } from "@/types";
 import type { SearchFilters, SortKey } from "@/features/search/types";
-import { PHOTO_QUOTA } from "@/lib/payments/quotas";
+import { PHOTO_QUOTA } from "@/lib/payments/quota-defaults";
 
 const RELIGION_WEIGHT = 0.28;
 const LOCATION_WEIGHT = 0.16;
@@ -158,56 +158,6 @@ export function filterProfiles(
   return result;
 }
 
-// the rows are read from the database and then filtered and sorted in the
-// browser, so the filter controls stay instant. no percentage is attached here:
-// a public visitor has no preferences of their own to score against
-export async function loadSearchProfiles(
-  filters: SearchFilters = {},
-  sort: SortKey = "recommended"
-): Promise<Profile[]> {
-  const { fetchProfiles } = await import("@/lib/data/queries");
-  return filterProfiles(await fetchProfiles(), filters, sort);
-}
-
-export async function loadRecommendedMatches(
-  current: Profile | undefined,
-  limit = 24
-): Promise<Profile[]> {
-  if (!current) return [];
-  const { fetchProfiles } = await import("@/lib/data/queries");
-  const allProfiles = await fetchProfiles();
-  const pref = current.preference;
-  const filters: SearchFilters = {
-    gender: current.gender === "male" ? "female" : "male",
-    ageMin: pref.minAge,
-    ageMax: pref.maxAge,
-    // an unset pref_religion column maps to "", which must never become a
-    // filter that matches nobody
-    religion: pref.religion && pref.religion !== "Any" ? pref.religion : undefined,
-    community: pref.communities.includes("Any") ? undefined : pref.communities[0],
-    education: pref.education.includes("Any") ? undefined : pref.education[0],
-    profession: pref.professions.includes("Any") ? undefined : pref.professions[0],
-    diet: pref.diet,
-    smoking: pref.smoking,
-    drinking: pref.drinking,
-  };
-  const candidates = allProfiles.filter((p) => p.id !== current.id);
-  return filterProfiles(candidates, filters, "recommended", current).slice(0, limit);
-}
-
-export async function loadProfile(id: string): Promise<Profile | undefined> {
-  const { fetchProfiles } = await import("@/lib/data/queries");
-  return (await fetchProfiles()).find((p) => p.id === id);
-}
-
-// the member's own row, which is readable before an admin has verified it. the
-// public loadProfile above goes through fetchProfiles and so hides anything that
-// is not verified+active, which is correct for browsing other members but wrong
-// for the owner's own dashboard and profile page.
-export async function loadOwnProfile(id: string): Promise<Profile | undefined> {
-  const { fetchOwnProfile } = await import("@/lib/data/queries");
-  return (await fetchOwnProfile(id)) ?? undefined;
-}
 
 // the dashboard used to print a flat 80% and a fixed set of task chips. the
 // number is now measured against the member's own row, so a profile filled in

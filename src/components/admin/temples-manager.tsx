@@ -23,7 +23,7 @@ import { ConfirmDialog } from "@/components/admin/confirm-dialog";
 import { IconAction, RowActions } from "@/components/admin/row-actions";
 import { PageHeader, Pagination, SearchInput } from "@/components/admin/shared";
 import { useToast } from "@/lib/state/toast-provider";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import {
   addTempleImagesAction,
   approveTempleAction,
@@ -938,7 +938,7 @@ const pickCover = (files: FileList | null) => {
                         <div className="min-w-0">
                           <dt className="text-xs text-charcoal-400">Added</dt>
                           <dd className="whitespace-nowrap text-sm font-medium text-charcoal-700">
-                            {new Date(t.addedAt).toLocaleDateString()}
+                            {formatDate(t.addedAt)}
                           </dd>
                         </div>
                         <div className="min-w-0">
@@ -974,7 +974,7 @@ const pickCover = (files: FileList | null) => {
                 <Cell className="text-charcoal-600">{timingCount(t)}</Cell>
                 <Cell className="whitespace-nowrap text-charcoal-600">{t.contact || "—"}</Cell>
                 <Cell className="whitespace-nowrap text-charcoal-400">
-                  {new Date(t.addedAt).toLocaleDateString()}
+                  {formatDate(t.addedAt)}
                 </Cell>
                 <Cell>{statusPill(t)}</Cell>
                 <Cell>{rowActions(t)}</Cell>
@@ -1003,6 +1003,7 @@ const pickCover = (files: FileList | null) => {
         open={modalOpen}
         onClose={closeModal}
         size="xl"
+        dismissOnBackdrop={false}
         title={editing ? `Edit ${editing.name}` : "Add new temple"}
         description={
           editing

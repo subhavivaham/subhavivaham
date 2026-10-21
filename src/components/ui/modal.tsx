@@ -27,6 +27,9 @@ export interface ModalProps {
   children: ReactNode;
   hideClose?: boolean;
   centerOnMobile?: boolean;
+  // long forms pass false so a stray tap outside the panel cannot throw away
+  // what has been typed; the close button and Escape still work
+  dismissOnBackdrop?: boolean;
 }
 
 const sizes = {
@@ -36,7 +39,17 @@ const sizes = {
   xl: "max-w-5xl",
 };
 
-export function Modal({ open, onClose, title, description, size = "md", children, hideClose, centerOnMobile }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  description,
+  size = "md",
+  children,
+  hideClose,
+  centerOnMobile,
+  dismissOnBackdrop = true,
+}: ModalProps) {
   const titleId = useId();
   const isHydrated = useIsHydrated();
   const reduceMotion = useReducedMotion();
@@ -82,15 +95,26 @@ export function Modal({ open, onClose, title, description, size = "md", children
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
         >
-          <motion.button
-            aria-label="Close dialog"
-            className="absolute inset-0 bg-charcoal-950/50 backdrop-blur-[2px]"
-            onClick={onClose}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-          />
+          {dismissOnBackdrop ? (
+            <motion.button
+              aria-label="Close dialog"
+              className="absolute inset-0 bg-charcoal-950/50 backdrop-blur-[2px]"
+              onClick={onClose}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            />
+          ) : (
+            <motion.div
+              aria-hidden
+              className="absolute inset-0 bg-charcoal-950/50 backdrop-blur-[2px]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            />
+          )}
           <motion.div
             role="dialog"
             aria-modal="true"

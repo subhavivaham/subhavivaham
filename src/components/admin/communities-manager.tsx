@@ -320,6 +320,7 @@ export function CommunitiesManager({
         open={creating || editing !== null}
         onClose={close}
         size="lg"
+        dismissOnBackdrop={false}
         title={editing ? `Edit ${editing.name}` : "Add community"}
         description="Communities power the public directory, filters and profile grouping."
       >

@@ -35,6 +35,12 @@ type ProfileFormScalars = Pick<
 export type ProfileInput = ProfileFormScalars & {
   caste: string;
   district: string;
+  // contact details live on the users row, not the profile: the admin add form
+  // collects them so the account gets a real address and phone number. the
+  // login password is users-only as well and is never prefilled from a row.
+  email: string;
+  mobile: string;
+  password: string;
   // family
   fatherOccupation: string;
   motherOccupation: string;
@@ -49,7 +55,8 @@ export type ProfileInput = ProfileFormScalars & {
   diet: string;
   smoking: string;
   drinking: string;
-  hobbies: string[];
+  // raw comma-separated text; the write layer splits it into the json array
+  hobbies: string;
   fitness: string;
   sports: string;
   music: string;
@@ -77,6 +84,11 @@ export function emptyProfileDraft(gender: Gender): ProfileInput {
   return {
     fullName: "",
     gender,
+    email: "",
+    mobile: "",
+    // the house default, so an admin-created profile is ready to hand over
+    // without typing one; the field stays editable
+    password: "subhavivaham",
     dateOfBirth: "",
     height: 163,
     maritalStatus: "single" as MaritalStatus,
@@ -106,7 +118,7 @@ export function emptyProfileDraft(gender: Gender): ProfileInput {
     diet: "",
     smoking: "",
     drinking: "",
-    hobbies: [],
+    hobbies: "",
     fitness: "",
     sports: "",
     music: "",
@@ -137,6 +149,9 @@ export function profileToInput(p: Profile): ProfileInput {
   return {
     fullName: p.fullName,
     gender: p.gender,
+    email: p.email ?? "",
+    mobile: p.mobile ?? "",
+    password: "",
     dateOfBirth: p.dateOfBirth,
     height: p.height,
     maritalStatus: p.maritalStatus,
@@ -166,7 +181,7 @@ export function profileToInput(p: Profile): ProfileInput {
     diet: p.lifestyle.diet,
     smoking: p.lifestyle.smoking,
     drinking: p.lifestyle.drinking,
-    hobbies: [...p.lifestyle.hobbies],
+    hobbies: p.lifestyle.hobbies.join(", "),
     fitness: p.lifestyle.fitness,
     sports: p.lifestyle.sports,
     music: p.lifestyle.music,

@@ -6,10 +6,7 @@ import { ProfileGrid } from "@/components/profile/profile-card";
 import { EmptyState } from "@/components/ui/states";
 import { ProfileCardSkeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import {
-  loadOwnProfile,
-  loadRecommendedMatches,
-} from "@/features/profiles/queries";
+import { loadOwnProfile, loadRecommendedMatches } from "@/features/profiles/loaders";
 import { useAuth } from "@/features/auth/auth-provider";
 import type { Profile } from "@/types";
 import { cn } from "@/lib/utils";

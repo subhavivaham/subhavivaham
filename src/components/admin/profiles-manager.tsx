@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   Trash2,
+  Pencil,
   Eye,
   Check,
   X,
@@ -18,6 +19,8 @@ import {
   ArrowRight,
   Receipt,
   SlidersHorizontal,
+  Mail,
+  Phone,
 } from "lucide-react";
 import Image from "next/image";
 import type {
@@ -35,9 +38,10 @@ import {
   setProfileStatusAction,
   setProfileVerifiedAction,
   setUserMembershipAction,
+  updateProfileAction,
   type ActionResult,
 } from "@/app/(admin)/admin/actions";
-import { emptyProfileDraft, type ProfileInput } from "@/features/profiles/store";
+import { emptyProfileDraft, profileToInput, type ProfileInput } from "@/features/profiles/store";
 import {
   MAX_PHOTOS,
   MAX_PHOTO_BYTES,
@@ -45,7 +49,7 @@ import {
   PHOTO_TYPES,
   photoSizeError,
 } from "@/lib/constants";
-import { ABOUT_MIN, ageFromDob } from "@/lib/registration";
+import { ABOUT_MIN, EMAIL_RE, MOBILE_RE, ageFromDob } from "@/lib/registration";
 import { Card, Table, Row, Cell, Pill } from "@/components/admin/table";
 import {
   ProfileForm,
@@ -77,7 +81,7 @@ import {
   ToolbarSelect,
 } from "@/components/admin/shared";
 import { useToast } from "@/lib/state/toast-provider";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 
 type GenderTab = "all" | Gender;
 type StatusFilter = "all" | ProfileStatus | "unverified";
@@ -194,11 +198,15 @@ export function ProfilesManager({
   const [tab, setTab] = useState<GenderTab>("all");
   const [query, setQuery] = useState("");
   const [location, setLocation] = useState("all");
+  const [community, setCommunity] = useState("all");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [page, setPage] = useState(1);
 
   const [creating, setCreating] = useState<Gender | null>(null);
+  // the profile being edited by the pencil row action; null means the modal is
+  // in create mode instead
+  const [editing, setEditing] = useState<Profile | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Profile | null>(null);
   // the profile being inspected from the eye action, shown read-only in a modal
   // so an admin can check every filled-in detail before verifying it
@@ -247,6 +255,13 @@ export function ProfilesManager({
     [rows]
   );
 
+  // only the communities that actually appear on a row, so the dropdown cannot
+  // offer a filter that is guaranteed to come back empty
+  const profileCommunities = useMemo(
+    () => Array.from(new Set(rows.map((p) => p.community).filter(Boolean))).sort(),
+    [rows]
+  );
+
   const membershipByUser = useMemo(() => {
     const map: Record<string, MembershipTier> = {};
     users.forEach((u) => {
@@ -287,6 +302,7 @@ export function ProfilesManager({
     return rows.filter((p) => {
       if (tab !== "all" && p.gender !== tab) return false;
       if (location !== "all" && p.city !== location) return false;
+      if (community !== "all" && p.community !== community) return false;
       if (status === "unverified" && p.verified) return false;
       if (status !== "all" && status !== "unverified" && p.status !== status) return false;
       if (!q) return true;
@@ -297,7 +313,7 @@ export function ProfilesManager({
         p.community.toLowerCase().includes(q)
       );
     });
-}, [rows, tab, query, location, status]);
+}, [rows, tab, query, location, community, status]);
 
   // a narrowed list can be shorter than the page the admin was on — the last
   // page of 45 rows is page 3, and a filter that leaves 4 rows has no page 3 —
@@ -320,6 +336,10 @@ export function ProfilesManager({
     setLocation(next);
     setPage(1);
   };
+  const pickCommunity = (next: string) => {
+    setCommunity(next);
+    setPage(1);
+  };
   const pickStatus = (next: StatusFilter) => {
     setStatus(next);
     setPage(1);
@@ -335,6 +355,7 @@ export function ProfilesManager({
   const activeFilters = [
     tab !== "all" ? GENDER_LABELS[tab] : null,
     location !== "all" ? location : null,
+    community !== "all" ? community : null,
     status !== "all" ? STATUS_LABELS[status] : null,
   ].filter((v): v is string => v !== null);
 
@@ -355,6 +376,22 @@ export function ProfilesManager({
     setCreating(gender);
   };
 
+  // the pencil action: the same sectioned form, prefilled from the row, saving
+  // through updateProfileAction instead of a create
+  const openEdit = (p: Profile) => {
+    setForm(profileToInput(p));
+    setErrors({});
+    setSection("basics");
+    setPending((prev) => {
+      for (const photo of prev) URL.revokeObjectURL(photo.preview);
+      return [];
+    });
+    setPhotoNotice("");
+    setViewing(null);
+    setCreating(null);
+    setEditing(p);
+  };
+
   const closeForm = () => {
     setPending((prev) => {
       for (const photo of prev) URL.revokeObjectURL(photo.preview);
@@ -362,12 +399,26 @@ export function ProfilesManager({
     });
     setPhotoNotice("");
     setCreating(null);
+    setEditing(null);
   };
 
   const getSectionErrors = (secKey: ProfileSection) => {
     const secErrors: Record<string, string> = {};
     if (secKey === "basics") {
       if (!form.fullName.trim()) secErrors.fullName = "Full name is required.";
+      if (!form.email.trim()) secErrors.email = "Email is required.";
+      else if (!EMAIL_RE.test(form.email.trim())) secErrors.email = "Enter a valid email address.";
+      if (!form.mobile.trim()) secErrors.mobile = "Mobile number is required.";
+      else if (!MOBILE_RE.test(form.mobile.replace(/[\s+-]/g, "")))
+        secErrors.mobile = "Enter a valid 10-digit mobile number.";
+      // create always sets a login password; edit may leave it blank to keep
+      // the one already on the account
+      if (editing === null) {
+        if (!form.password) secErrors.password = "Password is required.";
+        else if (form.password.length < 8) secErrors.password = "Use at least 8 characters.";
+      } else if (form.password && form.password.length < 8) {
+        secErrors.password = "Use at least 8 characters.";
+      }
       if (!form.dateOfBirth) secErrors.dateOfBirth = "Date of birth is required.";
       else {
         const age = ageFromDob(form.dateOfBirth);
@@ -405,7 +456,7 @@ export function ProfilesManager({
       if (form.prefMaxHeight < form.prefMinHeight)
         secErrors.prefMaxHeight = "Maximum height cannot be below the minimum.";
     }
-    if (secKey === "photos") {
+    if (secKey === "photos" && editing === null) {
       if (pending.length < MIN_PHOTOS) {
         secErrors.photos = `Attach at least ${MIN_PHOTOS} photo so members can recognise the profile.`;
       }
@@ -432,9 +483,22 @@ export function ProfilesManager({
       setSection(firstSectionWithErrors(found) ?? section);
       return;
     }
+    const target = editing;
     const gender = creating;
     const files = pending.map((photo) => photo.file);
     startTransition(async () => {
+      if (target) {
+        if (
+          apply(
+            await updateProfileAction(target.id, form),
+            `Profile for ${form.fullName} updated.`,
+            "success"
+          )
+        ) {
+          closeForm();
+        }
+        return;
+      }
       if (
         apply(
           await createProfileAction(form, files),
@@ -448,8 +512,9 @@ export function ProfilesManager({
   };
 
   // no profile is being edited here, so every slot is up for grabs: the only
-  // photos that exist are the ones picked for this new profile
-  const photoSlotsLeft = Math.max(0, MAX_PHOTOS - pending.length);
+  // photos that exist are the ones picked for this new profile. an edit keeps
+  // the existing gallery untouched — photo changes go through the row actions.
+  const photoSlotsLeft = editing ? 0 : Math.max(0, MAX_PHOTOS - pending.length);
 
   const currentSectionIndex = SECTIONS.findIndex((s) => s.key === section);
   const isLastSection = section === "photos" || currentSectionIndex === SECTIONS.length - 1;
@@ -638,6 +703,9 @@ export function ProfilesManager({
             <Receipt className="h-4 w-4" />
           </IconAction>
         )}
+        <IconAction label={`Edit ${p.fullName}`} onClick={() => openEdit(p)}>
+          <Pencil className="h-4 w-4" />
+        </IconAction>
         <IconAction label={`Delete ${p.fullName}`} tone="bad" onClick={() => setPendingDelete(p)}>
           <Trash2 className="h-4 w-4" />
         </IconAction>
@@ -681,15 +749,23 @@ export function ProfilesManager({
           className="w-full sm:w-72"
         />
 
-        {/* two labelled selects side by side need more width than a phone has,
-            so below md they collapse into one Filter button that opens the same
-            two choices as chip rows - the treatment the users page uses */}
+        {/* several labelled selects side by side need more width than a phone
+            has, so below md they collapse into one Filter button that opens the
+            same choices as chip rows - the treatment the users page uses */}
         <div className="hidden flex-wrap items-end gap-3 md:flex">
           <ToolbarSelect label="Location" value={location} onChange={pickLocation}>
             <option value="all">All locations</option>
             {locations.map((city) => (
               <option key={city} value={city}>
                 {city}
+              </option>
+            ))}
+          </ToolbarSelect>
+          <ToolbarSelect label="Community" value={community} onChange={pickCommunity}>
+            <option value="all">All communities</option>
+            {profileCommunities.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </ToolbarSelect>
@@ -758,6 +834,15 @@ export function ProfilesManager({
               onChange: (v: string) => pickLocation(v),
             },
             {
+              label: "Community",
+              value: community,
+              options: [
+                { key: "all", label: "All communities" },
+                ...profileCommunities.map((name) => ({ key: name, label: name })),
+              ],
+              onChange: (v: string) => pickCommunity(v),
+            },
+            {
               label: "Status",
               value: status,
               options: (Object.keys(STATUS_LABELS) as StatusFilter[]).map((key) => ({
@@ -800,12 +885,12 @@ export function ProfilesManager({
             would widen the table past the card and push the row actions off the
             edge. fixed layout takes the widths from the colgroup instead, and
             the wrapper catches anything that still exceeds them. the actions
-            column holds two 36px buttons plus their gap. */}
+            column holds up to four 36px buttons plus their gaps. */}
         <div className="overflow-x-auto md:hidden">
           <table className="w-full table-fixed text-left text-sm">
             <colgroup>
               <col />
-              <col className="w-[5.5rem]" />
+              <col className="w-[11rem]" />
             </colgroup>
             {/* no divide-y here: each profile is two rows, so it would draw a
                 line between the name and its own detail block. the rule goes
@@ -840,7 +925,7 @@ export function ProfilesManager({
                         <div className="min-w-0">
                           <dt className="text-xs text-charcoal-400">Created</dt>
                           <dd className="whitespace-nowrap text-sm font-medium text-charcoal-700">
-                            {new Date(p.profileCreatedOn).toLocaleDateString()}
+                            {formatDate(p.profileCreatedOn)}
                           </dd>
                         </div>
                         <div className="min-w-0">
@@ -893,7 +978,7 @@ export function ProfilesManager({
                 </Cell>
                 <Cell>{membershipSelect(p)}</Cell>
                 <Cell className="whitespace-nowrap text-charcoal-500">
-                  {new Date(p.profileCreatedOn).toLocaleDateString()}
+                  {formatDate(p.profileCreatedOn)}
                 </Cell>
                 <Cell>{verificationSelect(p)}</Cell>
                 <Cell>{statusSelect(p)}</Cell>
@@ -920,17 +1005,26 @@ export function ProfilesManager({
       />
 
       <Modal
-        open={creating !== null}
+        open={creating !== null || editing !== null}
         onClose={closeForm}
         size="xl"
-        title={`Add ${creating === "male" ? "groom" : "bride"} profile`}
-        description="Profiles an admin adds are published and verified straight away. Use the row actions to hide or unverify one later."
+        dismissOnBackdrop={false}
+        title={
+          editing
+            ? `Edit ${editing.fullName}`
+            : `Add ${creating === "male" ? "groom" : "bride"} profile`
+        }
+        description={
+          editing
+            ? "Update this member's details. Photos are managed from the profile view."
+            : "Profiles an admin adds are published and verified straight away. Use the row actions to hide or unverify one later."
+        }
       >
         <form
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (creating && !isLastSection) {
+            if ((creating || editing) && !isLastSection) {
               handleNextSection();
             } else {
               save();
@@ -956,10 +1050,11 @@ export function ProfilesManager({
             photos={pending}
             photoSlotsLeft={photoSlotsLeft}
             photoNotice={photoNotice}
-            existingPhotos={NO_PHOTOS}
+            existingPhotos={editing?.photos ?? NO_PHOTOS}
             onPhotosPicked={onPhotosPicked}
             onPhotoDropped={dropPending}
-            disableGender={creating !== null}
+            disableGender={creating !== null || editing !== null}
+            mode={editing ? "edit" : "create"}
           />
 
           <div className="flex items-center justify-between gap-2 pt-2">
@@ -985,7 +1080,7 @@ export function ProfilesManager({
                 </Button>
               ) : (
                 <Button type="submit" loading={busy}>
-                  <Check className="h-4 w-4" /> Create profile
+                  <Check className="h-4 w-4" /> {editing ? "Save changes" : "Create profile"}
                 </Button>
               )}
             </div>
@@ -1014,6 +1109,18 @@ export function ProfilesManager({
       >
         {viewing && (
           <div className="space-y-5">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-charcoal-100 bg-ivory-50 px-4 py-3 text-sm text-charcoal-600">
+              <span className="inline-flex items-center gap-2">
+                <Mail className="h-4 w-4 text-wine-700" aria-hidden />
+                <span className="font-medium text-charcoal-900">Email</span>
+                {viewing.email || "—"}
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <Phone className="h-4 w-4 text-wine-700" aria-hidden />
+                <span className="font-medium text-charcoal-900">Mobile</span>
+                {viewing.mobile || "—"}
+              </span>
+            </div>
             <OverviewCard profile={viewing} />
             <div className="grid gap-5 lg:grid-cols-2">
               <BasicDetailsCard profile={viewing} />

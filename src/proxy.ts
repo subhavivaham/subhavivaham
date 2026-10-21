@@ -1,35 +1,23 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { updateSession } from "@/lib/supabase/proxy";
+import { SESSION_COOKIE } from "@/lib/auth/session";
 
 export async function proxy(request: NextRequest) {
-  const response = await updateSession(request);
-
-  // Optimistic check only. A cookie is trivially forgeable, so this just avoids
+  // optimistic check only. a cookie is trivially forgeable, so this just avoids
   // rendering the admin shell for a signed-out visitor and saves a round trip.
-  // The real gate is requireAdmin() in admin/(protected)/layout.tsx plus
-  // assertAdmin() in every server action, and both validate the access token
-  // against the auth server rather than trusting a cookie.
+  // the real gate is requireAdmin() in the admin layout plus assertAdmin() in
+  // every server action, both of which hash the token and check the sessions
+  // table rather than trusting the cookie.
   const { pathname } = request.nextUrl;
-  const isAdminRoute =
-    pathname === "/admin" || pathname.startsWith("/admin/");
+  const isAdminRoute = pathname === "/admin" || pathname.startsWith("/admin/");
 
-  if (isAdminRoute && pathname !== "/admin/login") {
-    // @supabase/ssr names the cookie sb-<project-ref>-auth-token and splits it
-    // into .0/.1 chunks when it is large, so match the shape rather than one
-    // hardcoded name that would drift with the project ref.
-    const hasSession = request.cookies
-      .getAll()
-      .some((c) => c.name.startsWith("sb-") && c.name.includes("-auth-token"));
-
-    if (!hasSession) {
-      const login = request.nextUrl.clone();
-      login.pathname = "/admin/login";
-      login.search = "";
-      return NextResponse.redirect(login);
-    }
+  if (isAdminRoute && pathname !== "/admin/login" && !request.cookies.has(SESSION_COOKIE)) {
+    const login = request.nextUrl.clone();
+    login.pathname = "/admin/login";
+    login.search = "";
+    return NextResponse.redirect(login);
   }
 
-  return response;
+  return NextResponse.next();
 }
 
 export const config = {

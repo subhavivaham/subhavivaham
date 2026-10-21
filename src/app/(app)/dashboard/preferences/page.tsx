@@ -5,7 +5,7 @@ import { SlidersHorizontal, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/field";
 import { useToast } from "@/lib/state/toast-provider";
-import { loadOwnProfile } from "@/features/profiles/queries";
+import { loadOwnProfile } from "@/features/profiles/loaders";
 import { useAuth } from "@/features/auth/auth-provider";
 import {
   RELIGIONS,

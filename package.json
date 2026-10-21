@@ -9,11 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.7.0",
-    "@supabase/supabase-js": "^2.117.1",
     "clsx": "^2.1.1",
     "framer-motion": "^14.0.0",
     "lucide-react": "^1.47.0",
+    "mysql2": "^3.24.6",
     "next": "16.3.5",
     "react": "19.2.8",
     "react-dom": "19.2.8",

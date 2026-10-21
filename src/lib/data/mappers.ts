@@ -52,6 +52,9 @@ export interface ProfileRow {
   last_active: string | null;
   profile_created_on: string | null;
   horoscope_link: string | null;
+  // present only on admin reads, which join the users row
+  email?: string | null;
+  phone_number?: string | null;
   // the public profile_ids this profile has sent an interest to. the only
   // record of a sent interest - there is no interests row written by
   // sendInterest(), so this array is the whole of it. null on a row that has
@@ -115,7 +118,26 @@ const num = (v: unknown): number | null => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
-const list = (v: string[] | null | undefined): string[] => v ?? [];
+// mysql2 can hand json columns back as raw strings (MariaDB stores json as
+// text), while the postgrest client returned parsed values. accept both.
+export function parseJson<T>(value: unknown, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value !== "string") return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function jsonList(value: unknown): string[] {
+  const parsed = parseJson<unknown>(value, []);
+  return Array.isArray(parsed)
+    ? parsed.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+const list = jsonList;
 
 export function heightText(height: number): string {
   const feet = Math.floor(height / 30.48);
@@ -167,6 +189,8 @@ export function toProfile(row: ProfileRow, photos: ProfilePhotoRow[]): Profile {
     lastActive: str(row.last_active),
     profileCreatedOn: str(row.profile_created_on),
     ...(row.horoscope_link ? { horoscopeLink: row.horoscope_link } : {}),
+    ...(row.email ? { email: row.email } : {}),
+    ...(row.phone_number ? { mobile: row.phone_number } : {}),
     family: {
       fatherOccupation: str(row.father_occupation),
       motherOccupation: str(row.mother_occupation),
@@ -234,8 +258,11 @@ export function toPlan(row: Record<string, unknown>): MembershipPlan {
     labelPrice: price === 0 ? "Free" : `₹${price.toLocaleString("en-IN")}`,
     period: String(row.period ?? ""),
     popular: Boolean(row.popular),
-    features: (row.features as { label: string; included: boolean }[]) ?? [],
-    compareFeatures: (row.compare_features as { label: string; value: boolean | string }[]) ?? [],
+    features: parseJson<{ label: string; included: boolean }[]>(row.features, []),
+    compareFeatures: parseJson<{ label: string; value: boolean | string }[]>(
+      row.compare_features,
+      []
+    ),
     photoLimit: Number(row.photo_limit ?? 1),
     interestLimit: row.interest_limit == null ? null : Number(row.interest_limit),
   };

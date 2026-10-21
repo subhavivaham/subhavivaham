@@ -19,7 +19,7 @@ import {
   Toolbar,
 } from "@/components/admin/shared";
 import { useToast } from "@/lib/state/toast-provider";
-import { cn } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 
 type Filter = "all" | "admin" | "member" | "active";
 
@@ -285,7 +285,7 @@ export function UsersManager({
                         </Pill>
                         <Pill tone={STATUS_TONE[u.status]}>{u.status}</Pill>
                         <span className="text-xs text-charcoal-400">
-                          Joined {new Date(u.joinedAt).toLocaleDateString()}
+                          Joined {formatDate(u.joinedAt)}
                         </span>
                       </div>
                     </div>
@@ -352,7 +352,7 @@ export function UsersManager({
                         </Pill>
                       </Cell>
                       <Cell className="whitespace-nowrap text-charcoal-500">
-                        {new Date(u.joinedAt).toLocaleDateString()}
+                        {formatDate(u.joinedAt)}
                       </Cell>
                       <Cell>
                         <Pill tone={STATUS_TONE[u.status]}>{u.status}</Pill>

@@ -1,8 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { isSupabaseConfigured } from "@/lib/data/mode";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { run } from "@/lib/db";
 import { SERVICE_TYPES, type ServiceType } from "@/features/services/types";
 import { sendVendorRegistrationEmail } from "@/features/services/notify";
 
@@ -41,8 +40,7 @@ export async function registerVendorAction(
 
   const errors: Record<string, string> = {};
   // name, city and phone are required, matching the admin vendor form. contact
-  // stays optional there, so it is optional here too: anything stricter would
-  // reject submissions the admin screen would have accepted.
+  // stays optional there, so it is optional here too.
   if (!name) errors.name = "Vendor name is required.";
   else if (name.length > LIMITS.name) errors.name = `Keep this under ${LIMITS.name} characters.`;
 
@@ -54,8 +52,7 @@ export async function registerVendorAction(
   else if (city.length > LIMITS.city) errors.city = `Keep this under ${LIMITS.city} characters.`;
 
   // a mandapam is the one category a family has to travel to, so the street is
-  // required there rather than left in the free-text details where nobody would
-  // look for it. every other category is a service that comes to them.
+  // required there. every other category is a service that comes to them.
   if (type === "mandapam") {
     if (!address) errors.address = "Hall address is required.";
     else if (address.length > LIMITS.address)
@@ -74,37 +71,23 @@ export async function registerVendorAction(
     return { ok: false, error: "Please correct the highlighted fields.", errors };
   }
 
-  if (!isSupabaseConfigured) {
-    return {
-      ok: false,
-      error:
-        "Vendor registration needs the database, and this deployment has no Supabase credentials configured. Please call us instead and we will add you.",
-    };
-  }
-
   try {
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase.from("service_providers").insert({
-      service_id: `svc-${crypto.randomUUID().slice(0, 8)}`,
-      type,
-      name,
-      contact: contact || null,
-      city: city || null,
-      // dropped for any category that is not a mandapam: the form only shows the
-      // box for one, and a value left over from switching categories back must
-      // not ride along into a catering listing
-      address: type === "mandapam" ? address || null : null,
-      phone: phone || null,
-      details: details || null,
-      // both gates shut. the row is stored so the details are not lost, but it is
-      // unreadable to anon and filtered out of the public query, so it can only
-      // reach the services page after an admin approves it. the rls policy refuses
-      // an insert that claims otherwise.
-      is_approved: false,
-      active: false,
-    });
-
-    if (error) throw new Error(error.message);
+    await run(
+      "insert into service_providers (service_id, type, name, contact, city, address, phone, details, is_approved, active) " +
+        "values (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+      [
+        `svc-${crypto.randomUUID().slice(0, 8)}`,
+        type,
+        name,
+        contact || null,
+        city || null,
+        // dropped for any category that is not a mandapam: a value left over from
+        // switching categories must not ride along into a catering listing
+        type === "mandapam" ? address || null : null,
+        phone || null,
+        details || null,
+      ]
+    );
 
     // the admin list shows pending submissions, so refresh it for whoever is on
     // screen. the public services page is not revalidated: nothing about this

@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckboxGroup, Input, Select, Textarea } from "@/components/ui/field";
+import { CheckboxGroup, Input, PasswordInput, Select, Textarea } from "@/components/ui/field";
 import { PhotoPicker, type PendingPhoto } from "@/components/admin/photo-picker";
 import Image from "next/image";
 import type { ProfilePhoto } from "@/types";
@@ -41,7 +41,7 @@ export const SECTIONS: readonly {
   {
     key: "basics",
     label: "Basics",
-    fields: ["fullName", "gender", "dateOfBirth", "height", "maritalStatus"],
+    fields: ["fullName", "gender", "email", "mobile", "password", "dateOfBirth", "height", "maritalStatus"],
   },
   {
     key: "background",
@@ -176,6 +176,7 @@ export function ProfileForm({
   onPhotosPicked,
   onPhotoDropped,
   disableGender = false,
+  mode = "create",
 }: {
   form: ProfileInput;
   errors: Record<string, string | undefined>;
@@ -190,6 +191,9 @@ export function ProfileForm({
   onPhotosPicked: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onPhotoDropped: (id: string) => void;
   disableGender?: boolean;
+  // create requires a login password; edit treats a blank one as "leave the
+  // current password alone"
+  mode?: "create" | "edit";
 }) {
   const age = form.dateOfBirth ? ageFromDob(form.dateOfBirth) : NaN;
   const aboutLength = form.about.trim().length;
@@ -237,6 +241,39 @@ export function ProfileForm({
               <option value="male">Groom</option>
             </Select>
           </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input
+              label="Email"
+              type="email"
+              placeholder="name@example.com"
+              value={form.email}
+              error={errors.email}
+              onChange={(e) => onSet("email", e.target.value)}
+            />
+            <Input
+              label="Mobile number"
+              type="tel"
+              placeholder="98765 43210"
+              value={form.mobile}
+              error={errors.mobile}
+              onChange={(e) => onSet("mobile", e.target.value)}
+            />
+          </div>
+
+          <PasswordInput
+            label="Login password"
+            placeholder={mode === "edit" ? "Leave blank to keep current password" : "At least 8 characters"}
+            hint={
+              mode === "edit"
+                ? "The member signs in with this. Blank keeps the existing password."
+                : "The member signs in to their account with this."
+            }
+            autoComplete="new-password"
+            value={form.password}
+            error={errors.password}
+            onChange={(e) => onSet("password", e.target.value)}
+          />
 
           <div className="grid gap-4 sm:grid-cols-3">
             <Input
@@ -292,19 +329,19 @@ export function ProfileForm({
                 </option>
               ))}
             </Select>
-            <Input
+            <Select
               label="Community"
-              list="admin-community-options"
-              placeholder="e.g. Iyer"
               value={form.community}
               error={errors.community}
               onChange={(e) => onSet("community", e.target.value)}
-            />
-            <datalist id="admin-community-options">
+            >
+              <option value="">Select</option>
               {communities.map((name) => (
-                <option key={name} value={name} />
+                <option key={name} value={name}>
+                  {name}
+                </option>
               ))}
-            </datalist>
+            </Select>
             <Input
               label="Caste"
               hint="Sub-caste or gotra group, e.g. Thanjavur Vanniar."
@@ -544,16 +581,8 @@ export function ProfileForm({
             label="Hobbies"
             placeholder="e.g. Reading, classical dance"
             hint="Separate each one with a comma."
-            value={form.hobbies.join(", ")}
-            onChange={(e) =>
-              onSet(
-                "hobbies",
-                e.target.value
-                  .split(",")
-                  .map((h) => h.trim())
-                  .filter(Boolean)
-              )
-            }
+            value={form.hobbies}
+            onChange={(e) => onSet("hobbies", e.target.value)}
           />
         </>
       )}

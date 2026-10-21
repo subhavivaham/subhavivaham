@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { SlidersHorizontal, X } from "lucide-react";
 import { SearchFilters } from "@/components/search/search-filters";
+import { loadPublicProfiles } from "@/lib/data/public-actions";
 import { ProfileGrid } from "@/components/profile/profile-card";
 import { EmptyState } from "@/components/ui/states";
 import { SearchX } from "lucide-react";
@@ -78,8 +79,7 @@ export function SearchView({
   useEffect(() => {
     let live = true;
     void (async () => {
-      const { fetchProfiles } = await import("@/lib/data/queries");
-      const rows = await fetchProfiles();
+      const rows = await loadPublicProfiles();
       if (live) setSource(rows);
     })();
     return () => {

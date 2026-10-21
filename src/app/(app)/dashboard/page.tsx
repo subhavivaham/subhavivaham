@@ -22,10 +22,9 @@ import { useAuth } from "@/features/auth/auth-provider";
 import { useToast } from "@/lib/state/toast-provider";
 import {
   computeProfileCompletion,
-  loadOwnProfile,
-  loadRecommendedMatches,
   type ProfileCompletion,
 } from "@/features/profiles/queries";
+import { loadOwnProfile, loadRecommendedMatches } from "@/features/profiles/loaders";
 import { getPhotoQuota } from "./profile/actions";
 import { cn } from "@/lib/utils";
 

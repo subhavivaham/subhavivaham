@@ -1,15 +1,20 @@
 "use server";
 
-// every admin mutation. each action re-checks the admin claim itself rather
-// than trusting the layout guard, because a server action is an independently
-// reachable endpoint.
+// every admin mutation, on mysql. each action re-checks the admin claim itself
+// rather than trusting the layout guard, because a server action is an
+// independently reachable endpoint. mysql has no RLS, so assertAdmin() plus the
+// explicit key filters below are the whole boundary.
 //
-// the shape is uniform on purpose: write to postgres, then re-read the whole
-// list and hand it back. the client managers replace their state with the
-// returned rows, so a partial local edit can never drift from the database.
+// the shape is uniform on purpose: write, then re-read the whole list and hand
+// it back. the client managers replace their state with the returned rows, so a
+// partial local edit can never drift from the database.
 import { revalidatePath, updateTag } from "next/cache";
+import { randomUUID } from "crypto";
+import { q, q1, run, tx } from "@/lib/db";
 import { assertAdmin } from "@/lib/data/admin-dal";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { EMAIL_RE, MOBILE_RE } from "@/lib/registration";
+import { hashPassword } from "@/lib/auth/session";
+import { deleteUpload, listUploads, parseUploadUrl, saveUpload } from "@/lib/uploads";
 import {
   MAX_PAYMENT_SCREENSHOT_BYTES,
   MAX_PHOTOS,
@@ -66,7 +71,6 @@ import type {
   SubscriptionStatus,
   UserStatus,
 } from "@/types";
-import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -76,7 +80,7 @@ function fail(error: unknown): { ok: false; error: string } {
 }
 
 function newId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+  return `${prefix}-${randomUUID().slice(0, 8)}`;
 }
 
 function slug(value: string): string {
@@ -85,6 +89,14 @@ function slug(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
+}
+
+function nowSql(): string {
+  return new Date().toISOString().slice(0, 19).replace("T", " ");
+}
+
+function todaySql(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function ageFrom(dob: string): number {
@@ -97,51 +109,57 @@ function ageFrom(dob: string): number {
   return age;
 }
 
-function run<T>(work: () => Promise<ActionResult<T>>): Promise<ActionResult<T>> {
+function guard<T>(work: () => Promise<ActionResult<T>>): Promise<ActionResult<T>> {
   return work().catch(fail);
+}
+
+// builds "set a = ?, b = ?" from a patch object, so create and update can share
+// one column list and a new field can never be saved by one path only.
+function setClause(patch: Record<string, unknown>): { sql: string; values: unknown[] } {
+  const keys = Object.keys(patch);
+  return {
+    sql: keys.map((key) => `\`${key}\` = ?`).join(", "),
+    values: keys.map((key) => patch[key]),
+  };
+}
+
+function insertClause(row: Record<string, unknown>): { sql: string; values: unknown[] } {
+  const keys = Object.keys(row);
+  return {
+    sql: `(${keys.map((key) => `\`${key}\``).join(", ")}) values (${keys.map(() => "?").join(", ")})`,
+    values: keys.map((key) => row[key]),
+  };
 }
 
 // A plan's duration belongs to the plan, but the members already on it were
 // sold a term that has to move with it. Each active subscription is re-dated
 // from when it started, then the affected members' entitlements are re-derived
 // so a shortened plan that has already lapsed takes effect at once.
-async function reschedulePlanSubscriptions(
-  supabase: SupabaseClient,
-  planId: string,
-  period: string
-): Promise<void> {
-  const { data, error } = await supabase
-    .from("subscriptions")
-    .select("subscription_id, user_id, created_at")
-    .eq("plan", planId)
-    .eq("status", "active");
-  if (error) throw new Error(error.message);
+async function reschedulePlanSubscriptions(planId: string, period: string): Promise<void> {
+  const rows = await q<{ subscription_id: string; user_id: string; created_at: string }>(
+    "select subscription_id, user_id, created_at from subscriptions where plan = ? and status = 'active'",
+    [planId]
+  );
 
   const affected = new Set<string>();
-  for (const row of data ?? []) {
+  for (const row of rows) {
     const start = row.created_at ? new Date(String(row.created_at)) : new Date();
-    const { error: updateError } = await supabase
-      .from("subscriptions")
-      .update({
-        renews_on: addPeriod(start, period),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("subscription_id", row.subscription_id);
-    if (updateError) throw new Error(updateError.message);
+    await run("update subscriptions set renews_on = ? where subscription_id = ?", [
+      addPeriod(start, period),
+      row.subscription_id,
+    ]);
     affected.add(String(row.user_id));
   }
 
   for (const userId of affected) {
-    await syncMemberEntitlement(supabase, userId);
+    await syncMemberEntitlement(userId);
   }
 }
 
 // maps a ProfileInput onto the profiles table, sharing one column list between
-// create and update so the two can never disagree. the column set mirrors
-// app/(public)/register/actions.ts: family, lifestyle and partner preference
-// are stored flat on the row, and an admin-created profile has to carry the
-// same ones a self-registered one does.
-function profileColumns(input: ProfileInput) {
+// create and update so the two can never disagree. json columns are stringified
+// because mysql2 would otherwise send arrays through String() ("1,2,3").
+function profileColumns(input: ProfileInput): Record<string, unknown> {
   return {
     full_name: input.fullName.trim(),
     gender: input.gender,
@@ -163,7 +181,6 @@ function profileColumns(input: ProfileInput) {
     district: input.district || null,
     city: input.city.trim() || null,
     about: input.about.trim() || null,
-    updated_at: new Date().toISOString(),
     // family
     father_occupation: input.fatherOccupation.trim() || null,
     mother_occupation: input.motherOccupation.trim() || null,
@@ -173,12 +190,18 @@ function profileColumns(input: ProfileInput) {
     family_location: input.familyLocation.trim() || null,
     family_values: input.familyValues.trim() || null,
     gotra: input.gotra.trim() || null,
-    horoscope_required: input.horoscopeRequired,
+    horoscope_required: input.horoscopeRequired ? 1 : 0,
     // lifestyle
     diet: input.diet,
     smoking: input.smoking,
     drinking: input.drinking,
-    hobbies: input.hobbies,
+    hobbies: JSON.stringify(
+      input.hobbies
+        .split(/[,\n]/)
+        .map((h) => h.trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    ),
     fitness: input.fitness.trim() || null,
     sports: input.sports.trim() || null,
     music: input.music.trim() || null,
@@ -190,12 +213,12 @@ function profileColumns(input: ProfileInput) {
     min_height: input.prefMinHeight,
     max_height: input.prefMaxHeight,
     pref_religion: input.prefReligion || null,
-    pref_mother_tongues: input.prefMotherTongues,
-    pref_communities: input.prefCommunities,
-    pref_education: input.prefEducations,
-    pref_professions: input.prefProfessions,
-    pref_locations: input.prefLocations,
-    pref_marital_statuses: input.prefMaritalStatuses,
+    pref_mother_tongues: JSON.stringify(input.prefMotherTongues),
+    pref_communities: JSON.stringify(input.prefCommunities),
+    pref_education: JSON.stringify(input.prefEducations),
+    pref_professions: JSON.stringify(input.prefProfessions),
+    pref_locations: JSON.stringify(input.prefLocations),
+    pref_marital_statuses: JSON.stringify(input.prefMaritalStatuses),
     pref_income: input.prefIncome || null,
     pref_diet: input.prefDiet || null,
     pref_smoking: input.prefSmoking || null,
@@ -204,43 +227,28 @@ function profileColumns(input: ProfileInput) {
 }
 
 // any change to a profile can change what the public browse pages are allowed to
-// show, so every profile mutation invalidates them. without this the next
-// visitor is served the pre-approval page from the router cache.
+// show, so every profile mutation invalidates them.
 function revalidateProfileSurfaces() {
   revalidatePath("/admin/profiles");
   revalidatePath("/brides");
-    updateTag("public-data");
+  updateTag("public-data");
   revalidatePath("/grooms");
-    updateTag("public-data");
+  updateTag("public-data");
   revalidatePath("/search");
-    updateTag("public-data");
+  updateTag("public-data");
 }
 
 /* -- users ---------------------------------------------------------------- */
 
-// public.users.auth_user_id cascades from auth.users, but the reverse is not
-// true: profiles.user_id is NO ACTION, so dependent rows have to be cleared
-// before the account row or the delete trips the FK
+// profiles.user_id references users(user_id), so dependent rows have to be
+// cleared before the account row or the delete trips the FK. sessions cascade
+// from users, profile_photos and interests cascade from profiles.
 export async function deleteUserAction(userId: string): Promise<ActionResult<AdminUser[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-
-    // cascades to profile_photos and interests
-    const { error: profileError } = await supabase
-      .from("profiles")
-      .delete()
-      .eq("user_id", userId);
-    if (profileError) throw new Error(profileError.message);
-
-    const { error: subError } = await supabase
-      .from("subscriptions")
-      .delete()
-      .eq("user_id", userId);
-    if (subError) throw new Error(subError.message);
-
-    const { error } = await supabase.from("users").delete().eq("user_id", userId);
-    if (error) throw new Error(error.message);
+    await run("delete from profiles where user_id = ?", [userId]);
+    await run("delete from subscriptions where user_id = ?", [userId]);
+    await run("delete from users where user_id = ?", [userId]);
 
     revalidatePath("/admin/users");
     return { ok: true, data: await fetchAdminUsers() };
@@ -251,11 +259,9 @@ export async function updateUserStatusAction(
   userId: string,
   status: UserStatus
 ): Promise<ActionResult<AdminUser[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase.from("users").update({ status }).eq("user_id", userId);
-    if (error) throw new Error(error.message);
+    await run("update users set status = ? where user_id = ?", [status, userId]);
 
     revalidatePath("/admin/users");
     return { ok: true, data: await fetchAdminUsers() };
@@ -265,30 +271,23 @@ export async function updateUserStatusAction(
 export async function updateAllUserStatusAction(
   status: UserStatus
 ): Promise<ActionResult<AdminUser[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     // scoped to members so a bulk action cannot lock every admin out
-    const { error } = await supabase.from("users").update({ status }).eq("role", "member");
-    if (error) throw new Error(error.message);
+    await run("update users set status = ? where role = 'member'", [status]);
 
     revalidatePath("/admin/users");
     return { ok: true, data: await fetchAdminUsers() };
   });
 }
 
-// changes the public.users role. the Supabase app_metadata claim is managed in
-// the auth dashboard and is deliberately not touched here: a stale claim would
-// still grant access, so promoting someone is a two-step operation.
 export async function updateUserRoleAction(
   userId: string,
   role: AdminRole
 ): Promise<ActionResult<AdminUser[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase.from("users").update({ role }).eq("user_id", userId);
-    if (error) throw new Error(error.message);
+    await run("update users set role = ? where user_id = ?", [role, userId]);
 
     revalidatePath("/admin/users");
     return { ok: true, data: await fetchAdminUsers() };
@@ -297,11 +296,8 @@ export async function updateUserRoleAction(
 
 /* -- profiles ------------------------------------------------------------- */
 
-// the same bar the register form applies, so a profile an admin types in is no
-// thinner than one a member submitted themselves: at least one photo, at most
-// MAX_PHOTOS, and each one a type and size the storage bucket will take. the
-// picker in the browser is only a courtesy - a server action is an independently
-// reachable endpoint, so the rules are re-checked here.
+// the same bar the register form applies: at least one photo, at most
+// MAX_PHOTOS, and each one a type and size the bucket will take.
 function checkPickedPhotos(files: File[]): File[] {
   const photos = files.filter((file) => file instanceof File && file.size > 0);
   if (photos.length < MIN_PHOTOS)
@@ -315,12 +311,9 @@ function checkPickedPhotos(files: File[]): File[] {
   return photos;
 }
 
-// photos go up in order, the first one becoming the primary, matching the
-// is_primary / sort_order convention the photo actions below write. returns the
-// storage paths it created so a caller can undo the whole group on failure - a
-// half-attached gallery is worse than none.
+// photos go up in order, the first one becoming the primary. returns the public
+// urls it created so a caller can undo the whole group on failure.
 async function attachPhotos(
-  supabase: Awaited<ReturnType<typeof getSupabaseServer>>,
   profileUuid: string,
   profileKey: string,
   photos: File[]
@@ -328,89 +321,90 @@ async function attachPhotos(
   const uploaded: string[] = [];
   try {
     for (const [index, photo] of photos.entries()) {
-      const path = `${profileKey}/${index + 1}-${crypto.randomUUID().slice(0, 8)}.${photoExtension(photo.type)}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from(PHOTO_BUCKET)
-        .upload(path, photo, { contentType: photo.type, upsert: false });
-      if (uploadError) throw new Error(`Could not upload ${photo.name}: ${uploadError.message}`);
-      uploaded.push(path);
-
-      const { data: publicUrl } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path);
-      const { error: photoError } = await supabase.from("profile_photos").insert({
-        profile_id: profileUuid,
-        url: publicUrl.publicUrl,
-        is_primary: index === 0,
-        sort_order: index + 1,
-      });
-      if (photoError) throw new Error(`Could not save ${photo.name}: ${photoError.message}`);
+      const key = `${profileKey}/${index + 1}-${randomUUID().slice(0, 8)}.${photoExtension(photo.type)}`;
+      const url = await saveUpload(PHOTO_BUCKET, key, photo, photo.type);
+      uploaded.push(url);
+      await run(
+        "insert into profile_photos (profile_id, url, is_primary, sort_order) values (?, ?, ?, ?)",
+        [profileUuid, url, index === 0 ? 1 : 0, index + 1]
+      );
     }
   } catch (error) {
-    // the storage objects are this helper's to tidy; the rows and the profile
-    // itself are the caller's, since only it knows whether to roll back or retry
-    await supabase.storage.from(PHOTO_BUCKET).remove(uploaded);
+    await removeUploadUrls(uploaded);
     throw error;
   }
   return uploaded;
+}
+
+// best-effort removal of stored public urls we just wrote
+async function removeUploadUrls(urls: string[]): Promise<void> {
+  for (const url of urls) {
+    const parsed = parseUploadUrl(url);
+    if (parsed) await deleteUpload(parsed.bucket, parsed.key);
+  }
 }
 
 export async function createProfileAction(
   input: ProfileInput,
   photos: File[] = []
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     const name = input.fullName.trim();
     if (!name) throw new Error("Full name is required.");
+    const email = input.email.trim().toLowerCase();
+    const mobile = input.mobile.replace(/[\s+-]/g, "");
+    if (!email) throw new Error("Email is required.");
+    if (!EMAIL_RE.test(email)) throw new Error("Enter a valid email address.");
+    if (!mobile) throw new Error("Mobile number is required.");
+    if (!MOBILE_RE.test(mobile)) throw new Error("Enter a valid 10-digit mobile number.");
+    const taken = await q1<{ user_id: string }>(
+      "select user_id from users where email = ? or phone_number = ? limit 1",
+      [email, mobile]
+    );
+    if (taken) throw new Error("That email or mobile number is already registered.");
+    if (!input.password) throw new Error("Password is required.");
+    if (input.password.length < 8) throw new Error("Use at least 8 characters.");
     const picked = checkPickedPhotos(photos);
 
     // profiles.user_id references users(user_id), so the account row has to
     // exist before the profile row or the insert trips the FK
     const userId = newId("user");
-    const { error: userError } = await supabase.from("users").insert({
-      user_id: userId,
-      name,
-      email: `${userId}@placeholder.invalid`,
-      role: "member",
-      status: "active",
-      joined_at: new Date().toISOString(),
-    });
-    if (userError) throw new Error(userError.message);
+    await run(
+      "insert into users (user_id, auth_user_id, name, email, phone_number, role, status, password_hash, joined_at) " +
+        "values (?, ?, ?, ?, ?, 'member', 'active', ?, ?)",
+      [userId, userId, name, email, mobile, hashPassword(input.password), nowSql()]
+    );
 
     const profileKey = newId("p");
-    const { data: created, error } = await supabase
-      .from("profiles")
-      .insert({
-        ...profileColumns(input),
-        profile_id: profileKey,
-        user_id: userId,
-        // an admin typing the profile in has vouched for it, so it lands verified
-        // and live. a self-registered profile is the one that waits in the queue.
-        verified: true,
-        status: "active",
-        online: false,
-        last_active: new Date().toISOString(),
-        profile_created_on: new Date().toISOString().slice(0, 10),
-      })
-      .select("id")
-      .single();
-    if (error || !created) throw new Error(error?.message ?? "Profile not found.");
+    const profileUuid = randomUUID();
+    const patch = {
+      id: profileUuid,
+      profile_id: profileKey,
+      user_id: userId,
+      // an admin typing the profile in has vouched for it, so it lands verified
+      // and live. a self-registered profile is the one that waits in the queue.
+      verified: 1,
+      status: "active",
+      online: 0,
+      last_active: nowSql(),
+      profile_created_on: todaySql(),
+      ...profileColumns(input),
+    };
+    const insert = insertClause(patch);
+    await run(`insert into profiles ${insert.sql}`, insert.values);
 
-    // the profile and its gallery are one step as far as the admin is concerned,
-    // so a failed upload undoes the create rather than leaving a photo-less
+    // a failed upload undoes the create rather than leaving a photo-less
     // profile sitting in the list. deleting the profile cascades its photo rows.
     try {
-      await attachPhotos(supabase, created.id as unknown as string, profileKey, picked);
+      await attachPhotos(profileUuid, profileKey, picked);
     } catch (uploadFailure) {
-      await supabase.from("profiles").delete().eq("profile_id", profileKey);
-      await supabase.from("users").delete().eq("user_id", userId);
+      await run("delete from profiles where profile_id = ?", [profileKey]);
+      await run("delete from users where user_id = ?", [userId]);
       throw uploadFailure;
     }
 
-    // the new profile is one more member of its community, so the stored count
-    // moves with it
-    await syncCommunityVisibleMembers(supabase, [input.community]);
+    await syncCommunityVisibleMembers([input.community]);
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -421,25 +415,51 @@ export async function updateProfileAction(
   profileKey: string,
   input: ProfileInput
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     // the community the profile is leaving has to be recounted as well, so its
     // name is read before the update overwrites it
-    const { data: previous, error: readError } = await supabase
-      .from("profiles")
-      .select("community")
-      .eq("profile_id", profileKey)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const previous = await q1<{ user_id: string; community: string | null }>(
+      "select user_id, community from profiles where profile_id = ?",
+      [profileKey]
+    );
+    if (!previous) throw new Error("Profile not found.");
 
-    const { error } = await supabase
-      .from("profiles")
-      .update(profileColumns(input))
-      .eq("profile_id", profileKey);
-    if (error) throw new Error(error.message);
+    // contact details live on the users row, so the edit form's email and
+    // mobile are written there too — with a duplicate check that skips the
+    // profile's own account
+    const name = input.fullName.trim();
+    if (!name) throw new Error("Full name is required.");
+    const email = input.email.trim().toLowerCase();
+    const mobile = input.mobile.replace(/[\s+-]/g, "");
+    if (!email || !EMAIL_RE.test(email)) throw new Error("Enter a valid email address.");
+    if (!mobile || !MOBILE_RE.test(mobile)) throw new Error("Enter a valid 10-digit mobile number.");
+    const clash = await q1<{ user_id: string }>(
+      "select user_id from users where (email = ? or phone_number = ?) and user_id <> ? limit 1",
+      [email, mobile, previous.user_id]
+    );
+    if (clash) throw new Error("That email or mobile number is already registered.");
+    // a blank password on edit means "keep the one already on the account"
+    if (input.password && input.password.length < 8)
+      throw new Error("Use at least 8 characters.");
+    const nextPasswordHash = input.password ? hashPassword(input.password) : null;
+    await run(
+      nextPasswordHash
+        ? "update users set name = ?, email = ?, phone_number = ?, password_hash = ? where user_id = ?"
+        : "update users set name = ?, email = ?, phone_number = ? where user_id = ?",
+      nextPasswordHash
+        ? [name, email, mobile, nextPasswordHash, previous.user_id]
+        : [name, email, mobile, previous.user_id]
+    );
 
-    await syncCommunityVisibleMembers(supabase, [previous?.community, input.community]);
+    const patch = profileColumns(input);
+    const set = setClause(patch);
+    await run(`update profiles set ${set.sql} where profile_id = ?`, [
+      ...set.values,
+      profileKey,
+    ]);
+
+    await syncCommunityVisibleMembers([previous?.community, input.community]);
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -450,14 +470,9 @@ export async function setProfileStatusAction(
   profileKey: string,
   status: ProfileStatus
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("profiles")
-      .update({ status, updated_at: new Date().toISOString() })
-      .eq("profile_id", profileKey);
-    if (error) throw new Error(error.message);
+    await run("update profiles set status = ? where profile_id = ?", [status, profileKey]);
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -468,20 +483,18 @@ export async function setProfileVerifiedAction(
   profileKey: string,
   verified: boolean
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     // registration lands the profile as verified=false / status=inactive, and
-    // the anon read policy needs both before a profile is publicly visible.
-    // approving therefore does both in one step, otherwise the admin has to
-    // find a second "activate" control or the profile stays hidden.
-    const patch: { verified: boolean; status?: ProfileStatus; updated_at: string } = {
-      verified,
-      updated_at: new Date().toISOString(),
-    };
-    if (verified) patch.status = "active";
-    const { error } = await supabase.from("profiles").update(patch).eq("profile_id", profileKey);
-    if (error) throw new Error(error.message);
+    // the public pages need both before a profile is visible. approving
+    // therefore does both in one step.
+    if (verified) {
+      await run("update profiles set verified = 1, status = 'active' where profile_id = ?", [
+        profileKey,
+      ]);
+    } else {
+      await run("update profiles set verified = 0 where profile_id = ?", [profileKey]);
+    }
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -491,23 +504,19 @@ export async function setProfileVerifiedAction(
 export async function deleteProfileAction(
   profileKey: string
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     // read before the delete: afterwards there is no row left to ask which
     // community lost a member
-    const { data: existing, error: readError } = await supabase
-      .from("profiles")
-      .select("community")
-      .eq("profile_id", profileKey)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const existing = await q1<{ community: string | null }>(
+      "select community from profiles where profile_id = ?",
+      [profileKey]
+    );
 
     // profile_photos and interests both cascade from profiles
-    const { error } = await supabase.from("profiles").delete().eq("profile_id", profileKey);
-    if (error) throw new Error(error.message);
+    await run("delete from profiles where profile_id = ?", [profileKey]);
 
-    await syncCommunityVisibleMembers(supabase, [existing?.community]);
+    await syncCommunityVisibleMembers([existing?.community]);
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -517,50 +526,36 @@ export async function deleteProfileAction(
 /* -- profile photos -------------------------------------------------------- */
 
 // profile_photos.profile_id points at the profiles uuid, not the public
-// profile_id, so every photo action resolves the key first. both come back
-// together because a storage upload is keyed on the public one.
+// profile_id, so every photo action resolves the key first.
 async function photoProfile(profileKey: string): Promise<{ id: string; profileId: string }> {
-  const supabase = await getSupabaseServer();
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, profile_id")
-    .eq("profile_id", profileKey)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
+  const data = await q1<{ id: string; profile_id: string }>(
+    "select id, profile_id from profiles where profile_id = ?",
+    [profileKey]
+  );
   if (!data) throw new Error("Profile not found.");
-  return {
-    id: data.id as unknown as string,
-    profileId: data.profile_id as unknown as string,
-  };
+  return { id: data.id, profileId: data.profile_id };
 }
 
 export async function addProfilePhotoAction(
   profileKey: string,
   url: string
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
     const trimmed = url.trim();
     if (!trimmed) throw new Error("Enter a photo URL.");
 
-    const supabase = await getSupabaseServer();
     const { id: profileUuid } = await photoProfile(profileKey);
 
-    const { data: existing } = await supabase
-      .from("profile_photos")
-      .select("sort_order")
-      .eq("profile_id", profileUuid)
-      .order("sort_order", { ascending: false })
-      .limit(1);
-
-    const next = (existing?.[0]?.sort_order ?? 0) + 1;
-    const { error } = await supabase.from("profile_photos").insert({
-      profile_id: profileUuid,
-      url: trimmed,
-      is_primary: next === 1,
-      sort_order: next,
-    });
-    if (error) throw new Error(error.message);
+    const existing = await q1<{ last: number | null }>(
+      "select max(sort_order) as last from profile_photos where profile_id = ?",
+      [profileUuid]
+    );
+    const next = (existing?.last ?? 0) + 1;
+    await run(
+      "insert into profile_photos (profile_id, url, is_primary, sort_order) values (?, ?, ?, ?)",
+      [profileUuid, trimmed, next === 1 ? 1 : 0, next]
+    );
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -568,19 +563,13 @@ export async function addProfilePhotoAction(
 }
 
 // the same upload the register form does, so an admin can attach a member's
-// photos without going through a member account. the type, size and count rules
-// are re-checked here because the picker in the browser is only a convenience -
-// a server action is an independently reachable endpoint.
-//
-// the bucket is keyed on the profile's public profile_id, which is also what
-// migrations/0001_registration_photo_uploads.sql scopes its insert policy to, so
-// an upload here needs the admin branch of that policy: the admin session is not
-// the profile's owner.
+// photos without going through a member account. type, size and count rules are
+// re-checked here because the browser picker is only a convenience.
 export async function addProfilePhotoUploadAction(
   profileKey: string,
   files: File[]
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
     const photos = files.filter((file) => file instanceof File && file.size > 0);
     if (photos.length === 0) throw new Error("Choose at least one photo.");
@@ -591,43 +580,30 @@ export async function addProfilePhotoUploadAction(
       if (photo.size > MAX_PHOTO_BYTES) throw new Error(photoSizeError(photo.size));
     }
 
-    const supabase = await getSupabaseServer();
     const { id: profileUuid, profileId } = await photoProfile(profileKey);
 
-    const { data: existing } = await supabase
-      .from("profile_photos")
-      .select("sort_order")
-      .eq("profile_id", profileUuid)
-      .order("sort_order", { ascending: false })
-      .limit(1);
-    let sortOrder = (existing?.[0]?.sort_order ?? 0) + 1;
+    const existing = await q1<{ last: number | null }>(
+      "select max(sort_order) as last from profile_photos where profile_id = ?",
+      [profileUuid]
+    );
+    let sortOrder = (existing?.last ?? 0) + 1;
     const isFirst = sortOrder === 1;
 
     // one upload at a time, and rolled back as a group: a half-attached gallery
-    // is worse than no gallery, and the paths are only knowable as we go
+    // is worse than no gallery
     const uploaded: string[] = [];
     for (const photo of photos) {
-      const path = `${profileId}/${sortOrder}-${crypto.randomUUID().slice(0, 8)}.${photoExtension(photo.type)}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from(PHOTO_BUCKET)
-        .upload(path, photo, { contentType: photo.type, upsert: false });
-      if (uploadError) {
-        await supabase.storage.from(PHOTO_BUCKET).remove(uploaded);
-        throw new Error(`Could not upload ${photo.name}: ${uploadError.message}`);
-      }
-      uploaded.push(path);
-
-      const { data: publicUrl } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path);
-      const { error: photoError } = await supabase.from("profile_photos").insert({
-        profile_id: profileUuid,
-        url: publicUrl.publicUrl,
-        is_primary: isFirst,
-        sort_order: sortOrder,
-      });
-      if (photoError) {
-        await supabase.storage.from(PHOTO_BUCKET).remove(uploaded);
-        throw new Error(`Could not save ${photo.name}: ${photoError.message}`);
+      const key = `${profileId}/${sortOrder}-${randomUUID().slice(0, 8)}.${photoExtension(photo.type)}`;
+      try {
+        const url = await saveUpload(PHOTO_BUCKET, key, photo, photo.type);
+        uploaded.push(url);
+        await run(
+          "insert into profile_photos (profile_id, url, is_primary, sort_order) values (?, ?, ?, ?)",
+          [profileUuid, url, isFirst ? 1 : 0, sortOrder]
+        );
+      } catch (error) {
+        await removeUploadUrls(uploaded);
+        throw error;
       }
       sortOrder += 1;
     }
@@ -641,47 +617,47 @@ export async function removeProfilePhotoAction(
   profileKey: string,
   photoId: string
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase.from("profile_photos").delete().eq("id", photoId);
-    if (error) throw new Error(error.message);
+    // read the url first so the stored file can be swept as well as the row
+    const photo = await q1<{ url: string }>(
+      "select url from profile_photos where id = ?",
+      [photoId]
+    );
+    await run("delete from profile_photos where id = ?", [photoId]);
+    if (photo) await removeUploadUrls([photo.url]);
 
     revalidatePath("/admin/profiles");
     return { ok: true, data: await fetchAdminProfiles() };
   });
 }
 
-// promotes the given photo to slot 0 and shifts the rest down, so "primary" and
+// promotes the given photo to slot 1 and shifts the rest down, so "primary" and
 // "first in the list" stay the same thing
 export async function setPrimaryProfilePhotoAction(
   profileKey: string,
   photoId: string
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     const { id: profileUuid } = await photoProfile(profileKey);
 
-    const { data: photos, error } = await supabase
-      .from("profile_photos")
-      .select("id")
-      .eq("profile_id", profileUuid)
-      .order("sort_order");
-    if (error) throw new Error(error.message);
-    if (!photos?.some((p) => p.id === photoId)) throw new Error("Photo not found.");
+    const photos = await q<{ id: string }>(
+      "select id from profile_photos where profile_id = ? order by sort_order",
+      [profileUuid]
+    );
+    if (!photos.some((p) => p.id === photoId)) throw new Error("Photo not found.");
 
-    const ordered = photos.map((p) => p.id);
-    const target = photoId as unknown as string;
-    const next = [target, ...ordered.filter((id) => id !== target)];
-
-    for (const [index, id] of next.entries()) {
-      const { error: updateError } = await supabase
-        .from("profile_photos")
-        .update({ sort_order: index + 1, is_primary: index === 0 })
-        .eq("id", id);
-      if (updateError) throw new Error(updateError.message);
-    }
+    const next = [photoId, ...photos.map((p) => p.id).filter((id) => id !== photoId)];
+    await tx(async (db) => {
+      for (const [index, id] of next.entries()) {
+        await db.run("update profile_photos set sort_order = ?, is_primary = ? where id = ?", [
+          index + 1,
+          index === 0 ? 1 : 0,
+          id,
+        ]);
+      }
+    });
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -693,38 +669,37 @@ export async function moveProfilePhotoAction(
   photoId: string,
   delta: number
 ): Promise<ActionResult<Profile[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     const { id: profileUuid } = await photoProfile(profileKey);
 
-    const { data: photos, error } = await supabase
-      .from("profile_photos")
-      .select("id, sort_order, is_primary")
-      .eq("profile_id", profileUuid)
-      .order("sort_order");
-    if (error) throw new Error(error.message);
+    const photos = await q<{ id: string; sort_order: number; is_primary: number }>(
+      "select id, sort_order, is_primary from profile_photos where profile_id = ? order by sort_order",
+      [profileUuid]
+    );
 
-    const index = photos?.findIndex((p) => p.id === photoId) ?? -1;
+    const index = photos.findIndex((p) => p.id === photoId);
     if (index < 0) throw new Error("Photo not found.");
 
     const swapWith = index + delta;
-    if (!photos || swapWith < 0 || swapWith >= photos.length) {
+    if (swapWith < 0 || swapWith >= photos.length) {
       return { ok: true, data: await fetchAdminProfiles() };
     }
 
     const a = photos[index];
     const b = photos[swapWith];
-    const { error: first } = await supabase
-      .from("profile_photos")
-      .update({ sort_order: b.sort_order, is_primary: b.is_primary })
-      .eq("id", a.id);
-    if (first) throw new Error(first.message);
-    const { error: second } = await supabase
-      .from("profile_photos")
-      .update({ sort_order: a.sort_order, is_primary: a.is_primary })
-      .eq("id", b.id);
-    if (second) throw new Error(second.message);
+    await tx(async (db) => {
+      await db.run("update profile_photos set sort_order = ?, is_primary = ? where id = ?", [
+        b.sort_order,
+        b.is_primary,
+        a.id,
+      ]);
+      await db.run("update profile_photos set sort_order = ?, is_primary = ? where id = ?", [
+        a.sort_order,
+        a.is_primary,
+        b.id,
+      ]);
+    });
 
     revalidateProfileSurfaces();
     return { ok: true, data: await fetchAdminProfiles() };
@@ -736,22 +711,23 @@ export async function moveProfilePhotoAction(
 export async function createCommunityAction(
   input: CommunityInput
 ): Promise<ActionResult<Community[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     const name = input.name.trim();
     if (!name) throw new Error("Community name is required.");
 
-    const { error } = await supabase.from("communities").insert({
-      id: slug(name) || newId("c"),
-      name,
-      tamil_name: input.tamilName.trim() || name,
-      description: input.description.trim() || null,
-      tamil_description: input.tamilDescription.trim() || null,
-      visible_members: input.visibleMembers ?? 0,
-      active: true,
-    });
-    if (error) throw new Error(error.message);
+    await run(
+      "insert into communities (id, name, tamil_name, description, tamil_description, visible_members, active) " +
+        "values (?, ?, ?, ?, ?, ?, 1)",
+      [
+        slug(name) || newId("c"),
+        name,
+        input.tamilName.trim() || name,
+        input.description.trim() || null,
+        input.tamilDescription.trim() || null,
+        input.visibleMembers ?? 0,
+      ]
+    );
 
     revalidatePath("/admin/communities");
     revalidatePath("/communities");
@@ -764,21 +740,19 @@ export async function updateCommunityAction(
   id: string,
   input: CommunityInput
 ): Promise<ActionResult<Community[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("communities")
-      .update({
-        name: input.name.trim(),
-        tamil_name: input.tamilName.trim(),
-        description: input.description.trim() || null,
-        tamil_description: input.tamilDescription.trim() || null,
-        visible_members: input.visibleMembers ?? 0,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id);
-    if (error) throw new Error(error.message);
+    await run(
+      "update communities set name = ?, tamil_name = ?, description = ?, tamil_description = ?, visible_members = ? where id = ?",
+      [
+        input.name.trim(),
+        input.tamilName.trim(),
+        input.description.trim() || null,
+        input.tamilDescription.trim() || null,
+        input.visibleMembers ?? 0,
+        id,
+      ]
+    );
 
     revalidatePath("/admin/communities");
     revalidatePath("/communities");
@@ -791,14 +765,9 @@ export async function setCommunityActiveAction(
   id: string,
   active: boolean
 ): Promise<ActionResult<Community[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("communities")
-      .update({ active, updated_at: new Date().toISOString() })
-      .eq("id", id);
-    if (error) throw new Error(error.message);
+    await run("update communities set active = ? where id = ?", [active ? 1 : 0, id]);
 
     revalidatePath("/admin/communities");
     revalidatePath("/communities");
@@ -808,11 +777,9 @@ export async function setCommunityActiveAction(
 }
 
 export async function deleteCommunityAction(id: string): Promise<ActionResult<Community[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase.from("communities").delete().eq("id", id);
-    if (error) throw new Error(error.message);
+    await run("delete from communities where id = ?", [id]);
 
     revalidatePath("/admin/communities");
     revalidatePath("/communities");
@@ -845,53 +812,65 @@ function planInterestValue(limit: number | null): string {
   return limit === null ? "Unlimited" : String(limit);
 }
 
+function parseJsonColumn<T>(value: unknown, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return value as T;
+}
+
 export async function upsertPlanAction(
   input: PlanInput
 ): Promise<ActionResult<MembershipPlan[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     const id = (input.id ?? input.name) as string;
     if (!id) throw new Error("Choose a tier.");
 
     // the compare table keeps its own per-tier cells. the photo and interest
     // rows mirror the plan's limits, so they are regenerated from them here
     // while every other row is carried through untouched.
-    const { data: existing } = await supabase
-      .from("membership_plans")
-      .select("compare_features, period")
-      .eq("id", id)
-      .maybeSingle<{
-        compare_features: { label: string; value: boolean | string }[] | null;
-        period: string | null;
-      }>();
-    const compareFeatures = (existing?.compare_features ?? []).map((row) => {
+    const existing = await q1<{
+      compare_features: unknown;
+      period: string | null;
+    }>("select compare_features, period from membership_plans where id = ?", [id]);
+    const compareFeatures = parseJsonColumn<{ label: string; value: boolean | string }[]>(
+      existing?.compare_features,
+      []
+    ).map((row) => {
       if (/photo/i.test(row.label)) return { ...row, value: planPhotoValue(input.photoLimit) };
       if (/interest/i.test(row.label)) return { ...row, value: planInterestValue(input.interestLimit) };
       return row;
     });
 
-    const { error } = await supabase.from("membership_plans").upsert(
-      {
+    await run(
+      "insert into membership_plans (id, label, price, period, popular, features, photo_limit, interest_limit, compare_features) " +
+        "values (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "on duplicate key update label = values(label), price = values(price), period = values(period), " +
+        "popular = values(popular), features = values(features), photo_limit = values(photo_limit), " +
+        "interest_limit = values(interest_limit), compare_features = values(compare_features)",
+      [
         id,
-        label: input.label.trim() || id,
-        price: input.price,
-        period: input.period,
-        popular: Boolean(input.popular),
-        features: input.features,
-        photo_limit: input.photoLimit,
-        interest_limit: input.interestLimit,
-        compare_features: compareFeatures,
-      },
-      { onConflict: "id" }
+        input.label.trim() || id,
+        input.price,
+        input.period,
+        input.popular ? 1 : 0,
+        JSON.stringify(input.features),
+        input.photoLimit,
+        input.interestLimit,
+        JSON.stringify(compareFeatures),
+      ]
     );
-    if (error) throw new Error(error.message);
 
-    // only a changed duration moves the members already on the plan. a save that
-    // leaves the period alone must not reset a subscription an admin extended by
-    // hand.
+    // only a changed duration moves the members already on the plan. a save
+    // that leaves the period alone must not reset an admin's manual extension.
     if (existing && existing.period !== input.period) {
-      await reschedulePlanSubscriptions(supabase, id, input.period);
+      await reschedulePlanSubscriptions(id, input.period);
     }
 
     revalidatePath("/admin/memberships");
@@ -901,22 +880,20 @@ export async function upsertPlanAction(
 }
 
 export async function deletePlanAction(id: string): Promise<ActionResult<MembershipPlan[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    // subscriptions.plan references membership_plans.id, so a plan still in use
-    // has to be reported rather than left to fail as a raw FK error
-    const { count } = await supabase
-      .from("subscriptions")
-      .select("id", { count: "exact", head: true })
-      .eq("plan", id);
-    if (count && count > 0) {
-      throw new Error(`${count} subscription(s) still use this plan.`);
+    // subscriptions.plan references membership_plans.id, so a plan still in
+    // use has to be reported rather than left to fail as a raw FK error
+    const used = await q1<{ n: number }>(
+      "select count(*) as n from subscriptions where plan = ?",
+      [id]
+    );
+    if (used && used.n > 0) {
+      throw new Error(`${used.n} subscription(s) still use this plan.`);
     }
 
-    const { error } = await supabase.from("membership_plans").delete().eq("id", id);
-    if (error) throw new Error(error.message);
+    await run("delete from membership_plans where id = ?", [id]);
 
     revalidatePath("/admin/memberships");
     return { ok: true, data: await fetchAdminPlans() };
@@ -927,40 +904,27 @@ export async function createSubscriptionAction(
   userId: string,
   plan: MembershipTier
 ): Promise<ActionResult<Subscription[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { data: user, error: userError } = await supabase
-      .from("users")
-      .select("name")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (userError) throw new Error(userError.message);
+    const user = await q1<{ name: string }>("select name from users where user_id = ?", [userId]);
     if (!user) throw new Error("Member not found.");
 
-    const { data: planRow, error: planError } = await supabase
-      .from("membership_plans")
-      .select("price, period")
-      .eq("id", plan)
-      .maybeSingle();
-    if (planError) throw new Error(planError.message);
+    const planRow = await q1<{ price: number; period: string }>(
+      "select price, period from membership_plans where id = ?",
+      [plan]
+    );
     if (!planRow) throw new Error("Membership plan not found.");
 
     // the term is the plan's own duration, so a 30-day Silver and a 90-day
     // Premium expire when their labels say they do
-    const { error } = await supabase.from("subscriptions").insert({
-      subscription_id: newId("sub"),
-      user_id: userId,
-      plan,
-      member_name: user.name,
-      amount: planRow.price,
-      renews_on: addPeriod(new Date(), planRow.period),
-      status: "active",
-    });
-    if (error) throw new Error(error.message);
+    await run(
+      "insert into subscriptions (subscription_id, user_id, plan, member_name, amount, renews_on, status) " +
+        "values (?, ?, ?, ?, ?, ?, 'active')",
+      [newId("sub"), userId, plan, user.name, planRow.price, addPeriod(new Date(), planRow.period)]
+    );
 
-    await syncMemberEntitlement(supabase, userId);
+    await syncMemberEntitlement(userId);
 
     revalidatePath("/admin/memberships");
     revalidatePath("/admin/profiles");
@@ -972,43 +936,36 @@ export async function setSubscriptionStatusAction(
   subscriptionId: string,
   status: SubscriptionStatus
 ): Promise<ActionResult<Subscription[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { data: row, error: readError } = await supabase
-      .from("subscriptions")
-      .select("user_id, renews_on, plan")
-      .eq("subscription_id", subscriptionId)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const row = await q1<{ user_id: string; renews_on: string | null; plan: string }>(
+      "select user_id, renews_on, plan from subscriptions where subscription_id = ?",
+      [subscriptionId]
+    );
     if (!row) throw new Error("Subscription not found.");
-
-    const patch: {
-      status: SubscriptionStatus;
-      updated_at: string;
-      renews_on?: string | null;
-    } = { status, updated_at: new Date().toISOString() };
 
     // reactivating a subscription whose term has already lapsed has to open a
     // new term, otherwise the date-aware reconcile expires it again on the very
     // next read. a cancellation still inside its term keeps its original date.
     if (status === "active" && hasExpired(row.renews_on)) {
-      const { data: planRow } = await supabase
-        .from("membership_plans")
-        .select("period")
-        .eq("id", row.plan)
-        .maybeSingle();
-      patch.renews_on = addPeriod(new Date(), planRow?.period);
+      const planRow = await q1<{ period: string }>(
+        "select period from membership_plans where id = ?",
+        [row.plan]
+      );
+      await run("update subscriptions set status = ?, renews_on = ? where subscription_id = ?", [
+        status,
+        addPeriod(new Date(), planRow?.period),
+        subscriptionId,
+      ]);
+    } else {
+      await run("update subscriptions set status = ? where subscription_id = ?", [
+        status,
+        subscriptionId,
+      ]);
     }
 
-    const { error } = await supabase
-      .from("subscriptions")
-      .update(patch)
-      .eq("subscription_id", subscriptionId);
-    if (error) throw new Error(error.message);
-
-    await syncMemberEntitlement(supabase, row.user_id);
+    await syncMemberEntitlement(row.user_id);
 
     revalidatePath("/admin/memberships");
     revalidatePath("/admin/profiles");
@@ -1018,44 +975,32 @@ export async function setSubscriptionStatusAction(
 
 // moving a tier re-reads the plan price, otherwise the amount and the tier
 // would disagree and the revenue figure would quietly drift. the new plan's
-// duration also restarts the term, so the expiry matches the tier the member is
-// now on rather than carrying the old plan's length.
+// duration also restarts the term.
 export async function changeSubscriptionPlanAction(
   subscriptionId: string,
   plan: MembershipTier
 ): Promise<ActionResult<Subscription[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { data: row, error: readError } = await supabase
-      .from("subscriptions")
-      .select("user_id")
-      .eq("subscription_id", subscriptionId)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const row = await q1<{ user_id: string }>(
+      "select user_id from subscriptions where subscription_id = ?",
+      [subscriptionId]
+    );
     if (!row) throw new Error("Subscription not found.");
 
-    const { data: planRow, error: planError } = await supabase
-      .from("membership_plans")
-      .select("price, period")
-      .eq("id", plan)
-      .maybeSingle();
-    if (planError) throw new Error(planError.message);
+    const planRow = await q1<{ price: number; period: string }>(
+      "select price, period from membership_plans where id = ?",
+      [plan]
+    );
     if (!planRow) throw new Error("Membership plan not found.");
 
-    const { error } = await supabase
-      .from("subscriptions")
-      .update({
-        plan,
-        amount: planRow.price,
-        renews_on: addPeriod(new Date(), planRow.period),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("subscription_id", subscriptionId);
-    if (error) throw new Error(error.message);
+    await run(
+      "update subscriptions set plan = ?, amount = ?, renews_on = ? where subscription_id = ?",
+      [plan, planRow.price, addPeriod(new Date(), planRow.period), subscriptionId]
+    );
 
-    await syncMemberEntitlement(supabase, row.user_id);
+    await syncMemberEntitlement(row.user_id);
 
     revalidatePath("/admin/memberships");
     revalidatePath("/admin/profiles");
@@ -1068,40 +1013,30 @@ export async function changeSubscriptionPlanAction(
 export async function renewSubscriptionAction(
   subscriptionId: string
 ): Promise<ActionResult<Subscription[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { data, error } = await supabase
-      .from("subscriptions")
-      .select("user_id, renews_on, plan")
-      .eq("subscription_id", subscriptionId)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
+    const data = await q1<{ user_id: string; renews_on: string | null; plan: string }>(
+      "select user_id, renews_on, plan from subscriptions where subscription_id = ?",
+      [subscriptionId]
+    );
     if (!data) throw new Error("Subscription not found.");
 
-    const { data: planRow, error: planError } = await supabase
-      .from("membership_plans")
-      .select("period")
-      .eq("id", data.plan)
-      .maybeSingle();
-    if (planError) throw new Error(planError.message);
+    const planRow = await q1<{ period: string }>(
+      "select period from membership_plans where id = ?",
+      [data.plan]
+    );
 
     // extend from the existing date, or from today if it already lapsed
     const base =
       data.renews_on && !hasExpired(data.renews_on) ? new Date(data.renews_on) : new Date();
 
-    const { error: updateError } = await supabase
-      .from("subscriptions")
-      .update({
-        renews_on: addPeriod(base, planRow?.period),
-        status: "active",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("subscription_id", subscriptionId);
-    if (updateError) throw new Error(updateError.message);
+    await run(
+      "update subscriptions set renews_on = ?, status = 'active' where subscription_id = ?",
+      [addPeriod(base, planRow?.period), subscriptionId]
+    );
 
-    await syncMemberEntitlement(supabase, data.user_id);
+    await syncMemberEntitlement(data.user_id);
 
     revalidatePath("/admin/memberships");
     revalidatePath("/admin/profiles");
@@ -1112,53 +1047,52 @@ export async function renewSubscriptionAction(
 /* -- membership payments -------------------------------------------------- */
 
 // approving a payment is what actually grants the plan: it writes the same
-// active subscription an admin would create by hand, marks the request approved
-// and re-derives the member's entitlement from their live subscriptions.
+// active subscription an admin would create by hand, marks the request
+// approved and re-derives the member's entitlement from their live subscriptions.
 export async function approvePaymentAction(
   paymentId: string
 ): Promise<ActionResult<{ payments: MembershipPayment[]; subscriptions: Subscription[] }>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { data: payment, error: readError } = await supabase
-      .from("membership_payments")
-      .select("payment_id, user_id, plan, member_name, amount, status")
-      .eq("payment_id", paymentId)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const payment = await q1<{
+      payment_id: string;
+      user_id: string;
+      plan: string;
+      member_name: string;
+      amount: number;
+      status: string;
+    }>(
+      "select payment_id, user_id, plan, member_name, amount, status from membership_payments where payment_id = ?",
+      [paymentId]
+    );
     if (!payment) throw new Error("Payment request not found.");
     if (payment.status === "approved") throw new Error("This payment is already approved.");
 
-    const { data: planRow, error: planError } = await supabase
-      .from("membership_plans")
-      .select("price, period")
-      .eq("id", payment.plan)
-      .maybeSingle();
-    if (planError) throw new Error(planError.message);
+    const planRow = await q1<{ price: number; period: string }>(
+      "select price, period from membership_plans where id = ?",
+      [payment.plan]
+    );
 
-    const { error: subError } = await supabase.from("subscriptions").insert({
-      subscription_id: newId("sub"),
-      user_id: payment.user_id,
-      plan: payment.plan,
-      member_name: payment.member_name,
-      amount: Number(payment.amount ?? planRow?.price ?? 0),
-      renews_on: addPeriod(new Date(), planRow?.period),
-      status: "active",
-    });
-    if (subError) throw new Error(subError.message);
+    await run(
+      "insert into subscriptions (subscription_id, user_id, plan, member_name, amount, renews_on, status) " +
+        "values (?, ?, ?, ?, ?, ?, 'active')",
+      [
+        newId("sub"),
+        payment.user_id,
+        payment.plan,
+        payment.member_name,
+        Number(payment.amount ?? planRow?.price ?? 0),
+        addPeriod(new Date(), planRow?.period),
+      ]
+    );
 
-    const { error: statusError } = await supabase
-      .from("membership_payments")
-      .update({
-        status: "approved",
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("payment_id", paymentId);
-    if (statusError) throw new Error(statusError.message);
+    await run(
+      "update membership_payments set status = 'approved', reviewed_at = ? where payment_id = ?",
+      [nowSql(), paymentId]
+    );
 
-    await syncMemberEntitlement(supabase, payment.user_id);
+    await syncMemberEntitlement(payment.user_id);
 
     revalidatePath("/admin/memberships");
     revalidatePath("/admin/profiles");
@@ -1180,20 +1114,13 @@ export async function rejectPaymentAction(
   paymentId: string,
   note: string
 ): Promise<ActionResult<MembershipPayment[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { error } = await supabase
-      .from("membership_payments")
-      .update({
-        status: "rejected",
-        note: note.trim() || null,
-        reviewed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("payment_id", paymentId);
-    if (error) throw new Error(error.message);
+    await run(
+      "update membership_payments set status = 'rejected', note = ?, reviewed_at = ? where payment_id = ?",
+      [note.trim() || null, nowSql(), paymentId]
+    );
 
     revalidatePath("/admin/memberships");
     return { ok: true, data: await fetchAdminPayments() };
@@ -1202,12 +1129,12 @@ export async function rejectPaymentAction(
 
 // lets an admin attach or replace the proof on a request, for a member who sent
 // the screenshot over WhatsApp or paid at the office. it only changes the file,
-// not the status, so the approve/reject decision stays a separate, explicit step.
+// not the status, so the approve/reject decision stays a separate step.
 export async function uploadPaymentScreenshotAction(
   paymentId: string,
   formData: FormData
 ): Promise<ActionResult<MembershipPayment[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
 
     const file = formData.get("screenshot");
@@ -1217,26 +1144,27 @@ export async function uploadPaymentScreenshotAction(
     }
     if (file.size > MAX_PAYMENT_SCREENSHOT_BYTES) throw new Error(paymentScreenshotSizeError(file.size));
 
-    const supabase = await getSupabaseServer();
-    const { data: payment, error: readError } = await supabase
-      .from("membership_payments")
-      .select("user_id")
-      .eq("payment_id", paymentId)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const payment = await q1<{ user_id: string; screenshot_path: string }>(
+      "select user_id, screenshot_path from membership_payments where payment_id = ?",
+      [paymentId]
+    );
     if (!payment) throw new Error("Payment request not found.");
 
-    const path = `${payment.user_id}/admin-${crypto.randomUUID()}.${photoExtension(file.type)}`;
-    const { error: uploadError } = await supabase.storage
-      .from(PAYMENT_SCREENSHOT_BUCKET)
-      .upload(path, file, { contentType: file.type, upsert: false });
-    if (uploadError) throw new Error(`Could not upload the screenshot: ${uploadError.message}`);
+    const key = `${payment.user_id}/admin-${randomUUID()}.${photoExtension(file.type)}`;
+    const url = await saveUpload(PAYMENT_SCREENSHOT_BUCKET, key, file, file.type);
 
-    const { error: updateError } = await supabase
-      .from("membership_payments")
-      .update({ screenshot_path: path, updated_at: new Date().toISOString() })
-      .eq("payment_id", paymentId);
-    if (updateError) throw new Error(updateError.message);
+    try {
+      await run("update membership_payments set screenshot_path = ? where payment_id = ?", [
+        url,
+        paymentId,
+      ]);
+    } catch (error) {
+      await deleteUpload(PAYMENT_SCREENSHOT_BUCKET, key);
+      throw error;
+    }
+
+    // the replaced file, if it was one of ours
+    await removeUploadUrls([payment.screenshot_path ?? ""]);
 
     revalidatePath("/admin/memberships");
     return { ok: true, data: await fetchAdminPayments() };
@@ -1244,85 +1172,65 @@ export async function uploadPaymentScreenshotAction(
 }
 
 // sets a member's tier from the admin profiles list. the tier is derived from
-// an active subscription, so moving to free cancels it and moving to a paid tier
-// reuses the active row (or creates one) with the plan's current price. the
-// denormalised users flags the rest of the app enforces against are written in
-// the same step, so the admin list and the member's own quotas cannot disagree.
+// an active subscription, so moving to free cancels it and moving to a paid
+// tier reuses the active row (or creates one) with the plan's current price.
+// the denormalised users flags the rest of the app enforces against are written
+// in the same step.
 export async function setUserMembershipAction(
   userId: string,
   tier: MembershipTier
 ): Promise<ActionResult<AdminUser[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
     if (tier === "free") {
-      const { error } = await supabase
-        .from("subscriptions")
-        .update({ status: "cancelled", updated_at: new Date().toISOString() })
-        .eq("user_id", userId)
-        .eq("status", "active");
-      if (error) throw new Error(error.message);
+      await run(
+        "update subscriptions set status = 'cancelled' where user_id = ? and status = 'active'",
+        [userId]
+      );
     } else {
-      const { data: planRow, error: planError } = await supabase
-        .from("membership_plans")
-        .select("price, period")
-        .eq("id", tier)
-        .maybeSingle();
-      if (planError) throw new Error(planError.message);
+      const planRow = await q1<{ price: number; period: string }>(
+        "select price, period from membership_plans where id = ?",
+        [tier]
+      );
       if (!planRow) throw new Error("Membership plan not found.");
 
-      const { data: user, error: userError } = await supabase
-        .from("users")
-        .select("name")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (userError) throw new Error(userError.message);
+      const user = await q1<{ name: string }>("select name from users where user_id = ?", [userId]);
       if (!user) throw new Error("Member not found.");
 
-      const { data: existing, error: existingError } = await supabase
-        .from("subscriptions")
-        .select("subscription_id")
-        .eq("user_id", userId)
-        .eq("status", "active")
-        .maybeSingle();
-      if (existingError) throw new Error(existingError.message);
+      const existing = await q1<{ subscription_id: string }>(
+        "select subscription_id from subscriptions where user_id = ? and status = 'active' limit 1",
+        [userId]
+      );
 
       if (existing) {
         // the term restarts with the new plan's duration, so a stale lapsed
         // renews_on cannot immediately cancel the tier just granted
-        const { error } = await supabase
-          .from("subscriptions")
-          .update({
-            plan: tier,
-            amount: planRow.price,
-            renews_on: addPeriod(new Date(), planRow.period),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("subscription_id", existing.subscription_id);
-        if (error) throw new Error(error.message);
+        await run(
+          "update subscriptions set plan = ?, amount = ?, renews_on = ? where subscription_id = ?",
+          [tier, planRow.price, addPeriod(new Date(), planRow.period), existing.subscription_id]
+        );
       } else {
-        const { error } = await supabase.from("subscriptions").insert({
-          subscription_id: newId("sub"),
-          user_id: userId,
-          plan: tier,
-          member_name: user.name,
-          amount: planRow.price,
-          renews_on: addPeriod(new Date(), planRow.period),
-          status: "active",
-        });
-        if (error) throw new Error(error.message);
+        await run(
+          "insert into subscriptions (subscription_id, user_id, plan, member_name, amount, renews_on, status) " +
+            "values (?, ?, ?, ?, ?, ?, 'active')",
+          [
+            newId("sub"),
+            userId,
+            tier,
+            user.name,
+            planRow.price,
+            addPeriod(new Date(), planRow.period),
+          ]
+        );
       }
     }
 
-    const { error: flagError } = await supabase
-      .from("users")
-      .update({
-        is_membership_user: tier !== "free",
-        membership_plan: tier === "free" ? null : tier,
-      })
-      .eq("user_id", userId);
-    if (flagError) throw new Error(flagError.message);
+    await run("update users set is_membership_user = ?, membership_plan = ? where user_id = ?", [
+      tier !== "free" ? 1 : 0,
+      tier === "free" ? null : tier,
+      userId,
+    ]);
 
     revalidatePath("/admin/profiles");
     revalidatePath("/admin/memberships");
@@ -1337,19 +1245,14 @@ export async function updateSiteConfigAction(input: {
   bannerEnabled: boolean;
   officeAddress: string;
 }): Promise<ActionResult<{ bannerText: string; bannerEnabled: boolean; officeAddress: string }>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("site_config")
-      .upsert({
-        id: "main",
-        banner_text: input.bannerText.trim(),
-        banner_enabled: input.bannerEnabled,
-        office_address: input.officeAddress.trim(),
-        updated_at: new Date().toISOString(),
-      });
-    if (error) throw new Error(error.message);
+    await run(
+      "insert into site_config (id, banner_text, banner_enabled, office_address) values ('main', ?, ?, ?) " +
+        "on duplicate key update banner_text = values(banner_text), banner_enabled = values(banner_enabled), " +
+        "office_address = values(office_address)",
+      [input.bannerText.trim(), input.bannerEnabled ? 1 : 0, input.officeAddress.trim()]
+    );
 
     revalidatePath("/");
     revalidatePath("/admin/config");
@@ -1369,28 +1272,26 @@ export async function updateSiteConfigAction(input: {
 export async function createServiceAction(
   input: ServiceInput
 ): Promise<ActionResult<ServiceProvider[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     const name = input.name.trim();
     if (!name) throw new Error("Vendor name is required.");
 
-    const { error } = await supabase.from("service_providers").insert({
-      service_id: newId("svc"),
-      type: input.type,
-      name,
-contact: input.contact.trim() || null,
-      city: input.city.trim() || null,
-      // only a mandapam carries a street address; see the public vendor form
-      address: input.type === "mandapam" ? input.address.trim() || null : null,
-      phone: input.phone.trim() || null,
-      details: input.details.trim() || null,
-      // an admin adding a vendor has vouched for it, so it is published on the
-      // spot. only rows from the public vendor register form start unapproved.
-      is_approved: true,
-      active: true,
-    });
-    if (error) throw new Error(error.message);
+    await run(
+      "insert into service_providers (service_id, type, name, contact, city, address, phone, details, is_approved, active) " +
+        "values (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)",
+      [
+        newId("svc"),
+        input.type,
+        name,
+        input.contact.trim() || null,
+        input.city.trim() || null,
+        // only a mandapam carries a street address; see the public vendor form
+        input.type === "mandapam" ? input.address.trim() || null : null,
+        input.phone.trim() || null,
+        input.details.trim() || null,
+      ]
+    );
 
     revalidatePath("/admin/services");
     return { ok: true, data: await fetchAdminServices() };
@@ -1401,23 +1302,22 @@ export async function updateServiceAction(
   serviceId: string,
   input: ServiceInput
 ): Promise<ActionResult<ServiceProvider[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("service_providers")
-      .update({
-        type: input.type,
-        name: input.name.trim(),
-contact: input.contact.trim() || null,
-        city: input.city.trim() || null,
-        address: input.type === "mandapam" ? input.address.trim() || null : null,
-        phone: input.phone.trim() || null,
-        details: input.details.trim() || null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("service_id", serviceId);
-    if (error) throw new Error(error.message);
+    await run(
+      "update service_providers set type = ?, name = ?, contact = ?, city = ?, address = ?, phone = ?, details = ? " +
+        "where service_id = ?",
+      [
+        input.type,
+        input.name.trim(),
+        input.contact.trim() || null,
+        input.city.trim() || null,
+        input.type === "mandapam" ? input.address.trim() || null : null,
+        input.phone.trim() || null,
+        input.details.trim() || null,
+        serviceId,
+      ]
+    );
 
     revalidatePath("/admin/services");
     return { ok: true, data: await fetchAdminServices() };
@@ -1428,14 +1328,12 @@ export async function setServiceActiveAction(
   serviceId: string,
   active: boolean
 ): Promise<ActionResult<ServiceProvider[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("service_providers")
-      .update({ active, updated_at: new Date().toISOString() })
-      .eq("service_id", serviceId);
-    if (error) throw new Error(error.message);
+    await run("update service_providers set active = ? where service_id = ?", [
+      active ? 1 : 0,
+      serviceId,
+    ]);
 
     revalidatePath("/admin/services");
     return { ok: true, data: await fetchAdminServices() };
@@ -1443,22 +1341,18 @@ export async function setServiceActiveAction(
 }
 
 // the review gate for a listing that came in through /vendor-register. this is
-// the only path that sets is_approved from false to true, and assertAdmin keeps
-// it away from the anon role the register form runs as.
+// the only path that sets is_approved from false to true.
 export async function approveServiceAction(
   serviceId: string
 ): Promise<ActionResult<ServiceProvider[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    // both gates open together: approving a listing that was left switched off
-    // would set is_approved without publishing, and the row would look approved in
-    // the admin table while never appearing on the services page.
-    const { error } = await supabase
-      .from("service_providers")
-      .update({ is_approved: true, active: true, updated_at: new Date().toISOString() })
-      .eq("service_id", serviceId);
-    if (error) throw new Error(error.message);
+    // both gates open together: approving a listing left switched off would
+    // set is_approved without publishing it.
+    await run(
+      "update service_providers set is_approved = 1, active = 1 where service_id = ?",
+      [serviceId]
+    );
 
     revalidatePath("/admin/services");
     revalidatePath("/services");
@@ -1467,19 +1361,17 @@ export async function approveServiceAction(
   });
 }
 
-// withdraws approval and takes the listing off the site in one step, for a
-// submission that should not go live. keeps the row so the details are not lost.
+// withdraws approval and takes the listing off the site in one step. keeps the
+// row so the details are not lost.
 export async function rejectServiceAction(
   serviceId: string
 ): Promise<ActionResult<ServiceProvider[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("service_providers")
-      .update({ is_approved: false, active: false, updated_at: new Date().toISOString() })
-      .eq("service_id", serviceId);
-    if (error) throw new Error(error.message);
+    await run(
+      "update service_providers set is_approved = 0, active = 0 where service_id = ?",
+      [serviceId]
+    );
 
     revalidatePath("/admin/services");
     revalidatePath("/services");
@@ -1491,14 +1383,9 @@ export async function rejectServiceAction(
 export async function deleteServiceAction(
   serviceId: string
 ): Promise<ActionResult<ServiceProvider[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("service_providers")
-      .delete()
-      .eq("service_id", serviceId);
-    if (error) throw new Error(error.message);
+    await run("delete from service_providers where service_id = ?", [serviceId]);
 
     revalidatePath("/admin/services");
     return { ok: true, data: await fetchAdminServices() };
@@ -1508,9 +1395,7 @@ export async function deleteServiceAction(
 /* -- temples --------------------------------------------------------------- */
 
 // The cover is either a pasted url or an uploaded file, never both, so the form
-// sends a discriminator alongside the value. A separate field rather than
-// "whichever is non-empty", because switching the dropdown to Upload and then
-// back to URL must not silently resurrect the old url the operator replaced.
+// sends a discriminator alongside the value.
 export type TempleCoverMode = "url" | "upload";
 
 export interface TempleCover {
@@ -1523,16 +1408,8 @@ export interface TempleCover {
 
 const EMPTY_COVER: TempleCover = { mode: "url", url: "", file: null };
 
-// Spreads the seven day strings onto their columns.
-//
-// The keys come from TEMPLE_DAYS rather than being written out by hand, so the
-// column a day lands in cannot drift from the column it is read back from — that
-// mismatch would be silent, because both sides would still typecheck against
-// string.
-//
-// A shorter or longer array is tolerated rather than throwing: a day the client
-// did not send becomes null, which is the same as the admin leaving it blank.
-// Throwing here would mean a stale client could not save a temple at all.
+// Spreads the seven day strings onto their columns, keyed off TEMPLE_DAYS so the
+// column a day lands in cannot drift from the column it is read back from.
 function templeTimingsRow(timings: string[]): Record<string, string | null> {
   const row: Record<string, string | null> = {};
   TEMPLE_DAYS.forEach((day, index) => {
@@ -1541,50 +1418,32 @@ function templeTimingsRow(timings: string[]): Record<string, string | null> {
   return row;
 }
 
-// one builder for both create and update: the two used to repeat the same eight
-// columns, which is how new fields ended up saved by one path and not the other
-// The server half of the form validation. Every rule here has a twin in the
-// admin form's validate(), and they are kept in step deliberately: the client one
-// exists to put a message next to the field, this one is the actual gate. A
-// crafted request skips the client entirely, so anything not checked here is
-// simply not checked.
+// one builder for both create and update, and the server half of the form
+// validation. every rule here has a twin in the admin form's validate(); the
+// client copy exists to put a message next to the field, this one is the gate.
 function templeRow(input: TempleInput, cover: TempleCover) {
   const name = input.name.trim();
   if (!name) throw new Error("Temple name is required.");
   if (name.length > 120) throw new Error("Keep the temple name under 120 characters.");
 
-  // The required major fields. Kept in step with validate() in temples-manager,
-  // where each one gets a message next to the box; enforced here so a crafted
-  // request cannot write a temple without them.
-  //
-  // messages are bare for the same reason. the reason a field is required belongs
-  // in the label and the hint, not in the text an operator reads repeatedly.
   if (!input.address.trim()) throw new Error("Address is required.");
   if (!input.city.trim()) throw new Error("City is required.");
   if (!input.district.trim()) throw new Error("District is required.");
   if (!input.nameTa.trim()) throw new Error("Name in Tamil is required.");
   if (!input.contactPerson.trim()) throw new Error("Contact person is required.");
 
-  // contact is how a visitor reaches the temple, so it is required rather than
-  // optional. digits, spaces and the punctuation operators actually use; anything
-  // else gives a tel: link that does not dial.
   const phone = input.contact.trim();
   if (!phone) throw new Error("Phone number is required.");
   if (!/^[0-9+()\s.-]{7,20}$/.test(phone)) throw new Error("That does not look like a phone number.");
 
-  // the maps link is what Get Directions uses. mapsUrl() below drops a bad one
-  // silently, so requiring it turns that into a message instead
   if (!input.mapsUrl.trim()) throw new Error("Google Maps link is required.");
   if (!mapsUrl(input.mapsUrl.trim())) throw new Error("That is not a Google Maps link.");
 
-  // history is the entire "About this temple" panel, so blank is not a thin page
-  // but the page's main content missing
   const history = input.history.trim();
   if (!history) throw new Error("History is required.");
   if (history.length < 40)
     throw new Error("Write at least a sentence or two about this temple.");
 
-  // ---- optional, validated only when filled ----------------------------
   const whatsapp = input.whatsapp.trim();
   if (whatsapp && !/^[0-9+()\s.-]{7,20}$/.test(whatsapp))
     throw new Error("That does not look like a WhatsApp number.");
@@ -1592,7 +1451,6 @@ function templeRow(input: TempleInput, cover: TempleCover) {
   const email = input.email.trim();
   if (email && !email.includes("@")) throw new Error("That email address does not look valid.");
 
-  // both of these become an href, so a value that is not a url is worse than none
   if (input.website.trim() && !isHttpUrl(input.website.trim()))
     throw new Error("Website must start with http:// or https://");
 
@@ -1608,14 +1466,8 @@ function templeRow(input: TempleInput, cover: TempleCover) {
     district: input.district.trim() || null,
     state: input.state.trim() || null,
     country: input.country.trim() || "India",
-    // validated by the same helper the read side uses, so a bad url is dropped on
-    // the way in rather than rendered later. an empty box clears the link, which
-    // is how an operator removes it.
     maps_url: mapsUrl(input.mapsUrl.trim()),
     history: input.history.trim() || null,
-    // spread, not a `timings` key: this has to become seven separate columns. written
-    // as a key it sent a column named "timings", which postgrest rejects by name
-    // once the column is gone from the schema.
     ...templeTimingsRow(input.timings),
     contact: input.contact.trim() || null,
     whatsapp: input.whatsapp.trim() || null,
@@ -1633,24 +1485,32 @@ function checkCoverFile(cover: TempleCover) {
   if (file.size > MAX_TEMPLE_IMAGE_BYTES) throw new Error(templeImageSizeError(file.size));
 }
 
+// The five-image budget is shared: a cover occupies one of the five, so a temple
+// with an uploaded cover has four gallery slots left, not five. The cover is a
+// url on the temples row rather than a temple_images row, so it is counted from
+// there. A cover typed as a url by hand also counts.
+async function templeImageSlots(templeId: string) {
+  const [images, temple] = await Promise.all([
+    q1<{ n: number }>("select count(*) as n from temple_images where temple_id = ?", [templeId]),
+    q1<{ cover_image: string | null }>("select cover_image from temples where temple_id = ?", [
+      templeId,
+    ]),
+  ]);
+
+  const used = (images?.n ?? 0) + (temple?.cover_image ? 1 : 0);
+  return { used, left: Math.max(0, MAX_TEMPLE_IMAGES - used) };
+}
+
 // Writes an uploaded cover into the temple's own folder under a cover- prefix,
-// then points temples.cover_image at it. Both halves or neither: a stored object
-// nothing references is billed forever, and a cover_image url pointing at a
-// deleted object is a broken frame on the public page.
-//
-// The folder is the temple's own, which is why this runs after the row is
-// created rather than as the admin picks the file — temple_id does not exist
-// until then. That is also why the file is validated in the browser first, so
-// an oversized pick is refused before a round trip rather than after.
+// then points temples.cover_image at it. Both halves or neither.
 async function storeTempleCover(
-  supabase: Awaited<ReturnType<typeof getSupabaseServer>>,
   templeId: string,
   cover: TempleCover,
   previous: string | null
 ) {
   if (cover.mode !== "upload" || !cover.file) return;
 
-  const { left } = await templeImageSlots(supabase, templeId);
+  const { left } = await templeImageSlots(templeId);
   // replacing a cover reuses its own slot, so the budget only bites when the
   // temple had none
   if (!previous && left === 0) {
@@ -1659,39 +1519,32 @@ async function storeTempleCover(
     );
   }
 
-  const path = `${templeId}/${TEMPLE_COVER_PREFIX}${crypto.randomUUID()}.${photoExtension(cover.file.type)}`;
-  const { error: uploadError } = await supabase.storage
-    .from(TEMPLE_IMAGE_BUCKET)
-    .upload(path, cover.file, { contentType: cover.file.type, upsert: false });
-  if (uploadError) throw new Error(`Could not upload ${cover.file.name}: ${uploadError.message}`);
+  const key = `${templeId}/${TEMPLE_COVER_PREFIX}${randomUUID()}.${photoExtension(cover.file.type)}`;
+  let url: string;
+  try {
+    url = await saveUpload(TEMPLE_IMAGE_BUCKET, key, cover.file, cover.file.type);
+  } catch (error) {
+    throw new Error(`Could not upload ${cover.file.name}: ${error instanceof Error ? error.message : "failed"}`);
+  }
 
-  const url = supabase.storage.from(TEMPLE_IMAGE_BUCKET).getPublicUrl(path).data.publicUrl;
-
-  const { error: updateError } = await supabase
-    .from("temples")
-    .update({ cover_image: url, updated_at: new Date().toISOString() })
-    .eq("temple_id", templeId);
-  if (updateError) {
-    await supabase.storage.from(TEMPLE_IMAGE_BUCKET).remove([path]);
-    throw new Error(`Could not save the cover image: ${updateError.message}`);
+  try {
+    await run("update temples set cover_image = ? where temple_id = ?", [url, templeId]);
+  } catch (error) {
+    await deleteUpload(TEMPLE_IMAGE_BUCKET, key);
+    throw new Error(`Could not save the cover image: ${error instanceof Error ? error.message : "failed"}`);
   }
 
   // only now that the row points elsewhere is the old file unreferenced. a url
   // the operator pasted belongs to them, so this only ever removes our own
-  if (previous) await removeTempleImageObjects(templeId, [previous]);
+  if (previous) await removeTempleImageObjects([previous]);
 }
 
 // the cover a saved temple currently has, so a replacement knows what to unlink
-async function currentTempleCover(
-  supabase: Awaited<ReturnType<typeof getSupabaseServer>>,
-  templeId: string
-) {
-  const { data, error } = await supabase
-    .from("temples")
-    .select("cover_image")
-    .eq("temple_id", templeId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
+async function currentTempleCover(templeId: string) {
+  const data = await q1<{ cover_image: string | null }>(
+    "select cover_image from temples where temple_id = ?",
+    [templeId]
+  );
   return data?.cover_image ?? null;
 }
 
@@ -1699,33 +1552,23 @@ export async function createTempleAction(
   input: TempleInput,
   cover: TempleCover = EMPTY_COVER
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     checkCoverFile(cover);
 
     const templeId = newId("tmpl");
-    const { error } = await supabase.from("temples").insert({
-      temple_id: templeId,
-      ...templeRow(input, cover),
-      is_approved: true,
-      active: true,
-    });
-    if (error) throw new Error(error.message);
+    const row = { temple_id: templeId, ...templeRow(input, cover), is_approved: 1, active: 1 };
+    const insert = insertClause(row);
+    await run(`insert into temples ${insert.sql}`, insert.values);
 
-    // after the insert, because the upload path is the temple's own folder and
-    // temple_id only exists once the row does.
-    //
-    // on failure the row goes back out. a temple that exists without the cover
-    // the operator just chose is worse than one that was never created: the
-    // form still shows the error, so they press save again, and without this
-    // that second press inserts a second temple. an orphaned object is swept by
-    // the same delete below.
+    // after the insert, because the upload path is the temple's own folder.
+    // on failure the row goes back out: a temple that exists without the cover
+    // the operator just chose is worse than one that was never created.
     try {
-      await storeTempleCover(supabase, templeId, cover, null);
+      await storeTempleCover(templeId, cover, null);
     } catch (coverError) {
-      await supabase.from("temples").delete().eq("temple_id", templeId);
-      await removeTempleImageObjects(templeId);
+      await run("delete from temples where temple_id = ?", [templeId]);
+      await removeTempleImageObjects();
       throw coverError;
     }
 
@@ -1741,37 +1584,26 @@ export async function updateTempleAction(
   input: TempleInput,
   cover: TempleCover = EMPTY_COVER
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
     checkCoverFile(cover);
 
     // read before the write: the update below nulls cover_image for an upload,
     // so afterwards there is no way to tell what the replaced file was called
-    const previous = await currentTempleCover(supabase, templeId);
+    const previous = await currentTempleCover(templeId);
 
-    const { error } = await supabase
-      .from("temples")
-      .update({
-        ...templeRow(input, cover),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
+    const patch = templeRow(input, cover);
+    const set = setClause(patch);
+    await run(`update temples set ${set.sql} where temple_id = ?`, [...set.values, templeId]);
 
-    // Three ways the previous cover stops being referenced. An upload replaces
-    // it, and storeTempleCover unlinks the old file once the row points at the
-    // new one. A pasted url replaces it too, but storeTempleCover returns early
-    // in url mode, so it is unlinked here.
-    //
-    // only when the value actually changed. An edit that never touched the cover
-    // re-sends the same url, and unlinking that would delete the file the row
-    // still points at — a stored url resolving to nothing. Best-effort: the row
-    // is already correct, and an orphan costs storage rather than correctness.
+    // a pasted url replaces the previous cover too, but storeTempleCover
+    // returns early in url mode, so it is unlinked here. only when the value
+    // actually changed — unlinking an unchanged url would delete the file the
+    // row still points at.
     if (cover.mode === "url" && previous && previous !== cover.url.trim()) {
-      await removeTempleImageObjects(templeId, [previous]);
+      await removeTempleImageObjects([previous]);
     }
-    await storeTempleCover(supabase, templeId, cover, previous);
+    await storeTempleCover(templeId, cover, previous);
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -1784,14 +1616,9 @@ export async function setTempleActiveAction(
   templeId: string,
   active: boolean
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("temples")
-      .update({ active, updated_at: new Date().toISOString() })
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
+    await run("update temples set active = ? where temple_id = ?", [active ? 1 : 0, templeId]);
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -1803,14 +1630,9 @@ export async function setTempleActiveAction(
 export async function approveTempleAction(
   templeId: string
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("temples")
-      .update({ is_approved: true, active: true, updated_at: new Date().toISOString() })
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
+    await run("update temples set is_approved = 1, active = 1 where temple_id = ?", [templeId]);
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -1822,14 +1644,9 @@ export async function approveTempleAction(
 export async function rejectTempleAction(
   templeId: string
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("temples")
-      .update({ is_approved: false, active: false, updated_at: new Date().toISOString() })
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
+    await run("update temples set is_approved = 0, active = 0 where temple_id = ?", [templeId]);
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -1841,19 +1658,14 @@ export async function rejectTempleAction(
 export async function deleteTempleAction(
   templeId: string
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
-    const { error } = await supabase
-      .from("temples")
-      .delete()
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
 
-    // temple_images rows cascade from the delete above, but storage objects do
-    // not — there is no foreign key to a bucket. left behind, they are billed
-    // forever and never rendered, so sweep the bucket for this temple's prefix.
-    await removeTempleImageObjects(templeId);
+    // temple_images / temple_services / temple_festivals rows cascade from the
+    // delete above, but stored files do not — there is no foreign key to the
+    // filesystem. sweep the temple's folder so nothing is left orphaned.
+    await run("delete from temples where temple_id = ?", [templeId]);
+    await removeTempleImageObjects();
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -1862,63 +1674,40 @@ export async function deleteTempleAction(
   });
 }
 
-// best-effort, same reasoning as the member profile photo delete: the row is
-// what the app reads, so a failed object delete leaves an orphaned file rather
-// than a gallery with a broken frame in it.
+// best-effort, same reasoning as the member photo delete: the row is what the
+// app reads, so a failed file delete leaves an orphaned file rather than a
+// gallery with a broken frame in it.
 //
-// given urls, it removes exactly those. given none, it sweeps the whole folder —
-// which is only correct when the caller just deleted every row for the temple.
-async function removeTempleImageObjects(templeId: string, urls?: string[]) {
-  const supabase = await getSupabaseServer();
-  let paths: string[];
-
+// given urls, it removes exactly those that are ours. given none, it sweeps the
+// whole temple folder — which is only correct when the caller just deleted
+// every row for the temple.
+async function removeTempleImageObjects(urls?: string[]) {
   if (urls && urls.length > 0) {
-    const prefix = `${TEMPLE_IMAGE_BUCKET}/`;
-    paths = urls
-      .map((url) => {
-        const at = url.indexOf(prefix);
-        if (at === -1) return null;
-        return decodeURIComponent(url.slice(at + prefix.length).split("?")[0]);
-      })
-      .filter((path): path is string => Boolean(path));
-  } else {
-    const { data } = await supabase.storage.from(TEMPLE_IMAGE_BUCKET).list(templeId);
-    paths = (data ?? []).map((entry) => `${templeId}/${entry.name}`);
+    for (const url of urls) {
+      const parsed = parseUploadUrl(url);
+      if (parsed) await deleteUpload(parsed.bucket, parsed.key);
+    }
+    return;
   }
 
-  if (paths.length === 0) return;
-  await supabase.storage.from(TEMPLE_IMAGE_BUCKET).remove(paths);
-}
-
-// The five-image budget is shared: a cover occupies one of the five, so a temple
-// with an uploaded cover has four gallery slots left, not five. The cover is a
-// url on the temples row rather than a temple_images row, so it is counted from
-// there. A cover typed as a url by hand also counts — the budget is about how
-// many images the page shows, not about how many files are in storage.
-async function templeImageSlots(supabase: Awaited<ReturnType<typeof getSupabaseServer>>, templeId: string) {
-  const [{ data: images }, { data: temple }] = await Promise.all([
-    supabase.from("temple_images").select("id").eq("temple_id", templeId),
-    supabase.from("temples").select("cover_image").eq("temple_id", templeId).maybeSingle(),
-  ]);
-
-  const used = (images?.length ?? 0) + (temple?.cover_image ? 1 : 0);
-  return { used, left: Math.max(0, MAX_TEMPLE_IMAGES - used) };
+  const keys = await listUploads(TEMPLE_IMAGE_BUCKET);
+  for (const key of keys) {
+    await deleteUpload(TEMPLE_IMAGE_BUCKET, key);
+  }
 }
 
 export async function addTempleImagesAction(
   templeId: string,
   files: File[]
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
     if (files.length === 0) throw new Error("Choose at least one image to upload.");
 
-    const { left } = await templeImageSlots(supabase, templeId);
-    // the trigger in table_creation.md enforces this too, but it fails as a raw
-    // check_violation from postgrest with no useful text, so the friendly check
-    // happens first and the trigger is only the backstop against a race
+    const { left } = await templeImageSlots(templeId);
+    // the schema trigger enforces this too, but it fails as a raw SQL error
+    // with no useful text, so the friendly check happens first
     if (files.length > left) {
       throw new Error(
         left > 0
@@ -1934,52 +1723,38 @@ export async function addTempleImagesAction(
 
     // sort_order continues from the gallery rows already present. the cover is
     // not one of them, so it does not consume a number here.
-    const { data: last } = await supabase
-      .from("temple_images")
-      .select("sort_order")
-      .eq("temple_id", templeId)
-      .order("sort_order", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const from = Number(last?.sort_order ?? 0);
+    const last = await q1<{ last: number | null }>(
+      "select max(sort_order) as last from temple_images where temple_id = ?",
+      [templeId]
+    );
+    const from = Number(last?.last ?? 0);
 
-    // a uuid rather than a slot number in the filename: reordering changes
-    // sort_order on the row, and a path carrying "1-" would then be a lie about
-    // where the image sits
     const uploaded: string[] = [];
     const inserted: string[] = [];
     try {
       for (const [index, file] of files.entries()) {
-        const path = `${templeId}/${crypto.randomUUID()}.${photoExtension(file.type)}`;
+        const key = `${templeId}/${randomUUID()}.${photoExtension(file.type)}`;
+        const url = await saveUpload(TEMPLE_IMAGE_BUCKET, key, file, file.type);
+        uploaded.push(url);
 
-        const { error: uploadError } = await supabase.storage
-          .from(TEMPLE_IMAGE_BUCKET)
-          .upload(path, file, { contentType: file.type, upsert: false });
-        if (uploadError) throw new Error(`Could not upload ${file.name}: ${uploadError.message}`);
-        uploaded.push(path);
-
-        const { data, error: insertError } = await supabase
-          .from("temple_images")
-          .insert({
-            temple_id: templeId,
-            url: supabase.storage.from(TEMPLE_IMAGE_BUCKET).getPublicUrl(path).data.publicUrl,
-            alt: "",
-            sort_order: from + index + 1,
-          })
-          .select("id")
-          .single();
-        if (insertError) throw new Error(`Could not save ${file.name}: ${insertError.message}`);
-        inserted.push(String(data.id));
+        const id = randomUUID();
+        await run(
+          "insert into temple_images (id, temple_id, url, alt, sort_order) values (?, ?, ?, '', ?)",
+          [id, templeId, url, from + index + 1]
+        );
+        inserted.push(id);
       }
     } catch (error) {
-      // both halves have to go. removing only the files would leave rows pointing
-      // at urls that 404, which is a worse gallery than none at all; removing only
-      // the rows would leave files nothing references, still counting against the
-      // five-image cap. a partial upload is undone completely or not at all.
+      // both halves have to go: rows pointing at files that 404 are a worse
+      // gallery than none, and files nothing references still count against
+      // the five-image cap.
       if (inserted.length > 0) {
-        await supabase.from("temple_images").delete().in("id", inserted);
+        await run(`delete from temple_images where id in (${inserted.map(() => "?").join(", ")})`, inserted);
       }
-      await supabase.storage.from(TEMPLE_IMAGE_BUCKET).remove(uploaded);
+      for (const url of uploaded) {
+        const parsed = parseUploadUrl(url);
+        if (parsed) await deleteUpload(parsed.bucket, parsed.key);
+      }
       throw error;
     }
 
@@ -1994,33 +1769,22 @@ export async function deleteTempleImageAction(
   templeId: string,
   imageId: string
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
     // scoped to both temple and id so a crafted request cannot delete an image
     // belonging to a different temple
-    const { data: image, error: readError } = await supabase
-      .from("temple_images")
-      .select("url")
-      .eq("id", imageId)
-      .eq("temple_id", templeId)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
+    const image = await q1<{ url: string }>(
+      "select url from temple_images where id = ? and temple_id = ?",
+      [imageId, templeId]
+    );
     if (!image) throw new Error("That image is no longer in the gallery.");
 
-    const { error } = await supabase
-      .from("temple_images")
-      .delete()
-      .eq("id", imageId)
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
+    await run("delete from temple_images where id = ? and temple_id = ?", [imageId, templeId]);
 
     // the url is read before the delete, because once the row is gone there is
-    // nothing left to derive the storage path from. it must be this one file:
-    // removing the folder instead would leave every remaining row pointing at a
-    // file that no longer exists.
-    await removeTempleImageObjects(templeId, [String(image.url)]);
+    // nothing left to derive the file path from. it must be this one file.
+    await removeTempleImageObjects([image.url]);
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -2030,22 +1794,18 @@ export async function deleteTempleImageAction(
 }
 
 // -- festivals ---------------------------------------------------------------
-// one row per upcoming festival. the whole list is saved in one pass rather than
-// one action per row: the admin form edits an array, and a list where each add
-// or delete is its own request means a dropped connection leaves half the list
-// saved. the trade is that a failed save leaves the previous list intact, which
-// is the better outcome.
+// one row per upcoming festival. the whole list is saved in one pass rather
+// than one action per row: a list where each add or delete is its own request
+// means a dropped connection leaves half the list saved.
 export async function saveTempleFestivalsAction(
   templeId: string,
   festivals: { name: string; happensOn: string }[]
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    // every row needs a name, and the date is optional but must look like a date
-    // if it is there. validated before anything is written so a bad row does not
-    // arrive as a postgrest 400 with no useful text.
+    // every row needs a name, and the date is optional but must look like a
+    // date if it is there. validated before anything is written.
     const cleaned = festivals.map((festival, index) => {
       const name = festival.name.trim();
       if (!name) throw new Error(`Festival ${index + 1} needs a name.`);
@@ -2059,35 +1819,19 @@ export async function saveTempleFestivalsAction(
     if (new Set(names).size !== names.length)
       throw new Error("Two festivals have the same name.");
 
-    // delete-then-insert, scoped by temple_id rather than by id. swapping the
-    // whole list means a row the admin removed has nothing left pointing at it,
-    // and a rename needs no separate update.
-    const { error: deleteError } = await supabase
-      .from("temple_festivals")
-      .delete()
-      .eq("temple_id", templeId);
-    if (deleteError) throw new Error(deleteError.message);
-
-    if (cleaned.length > 0) {
-      const { error: insertError } = await supabase.from("temple_festivals").insert(
-        cleaned.map((festival, index) => ({
-          temple_id: templeId,
-          name: festival.name,
-          happens_on: festival.happensOn,
+    // delete-then-insert, scoped by temple_id. a rename needs no separate
+    // update, and a row the admin removed has nothing left pointing at it.
+    await tx(async (db) => {
+      await db.run("delete from temple_festivals where temple_id = ?", [templeId]);
+      for (const [index, festival] of cleaned.entries()) {
+        await db.run(
+          "insert into temple_festivals (temple_id, name, happens_on, sort_order) values (?, ?, ?, ?)",
           // numbered in the order the admin typed them, so the form and the
           // public list agree before the date sort is applied
-          sort_order: index + 1,
-        }))
-      );
-      if (insertError) {
-        // the delete already committed, so the temple now has no festivals at
-        // all. that is recoverable from the form, unlike a half-written list.
-        throw new Error(insertError.message);
+          [templeId, festival.name, festival.happensOn, index + 1]
+        );
       }
-    }
-    // if the insert failed the temple is left with no festivals rather than a
-    // half-written list. an operator reopens the form and retries; a page mixing
-    // the old and new names would be worse than either.
+    });
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");
@@ -2098,26 +1842,19 @@ export async function saveTempleFestivalsAction(
 
 // -- services -----------------------------------------------------------------
 // one row per package or offering, saved in one pass for the same reason the
-// festivals are: the form edits an array, and a request per row would leave half
-// the list written when a connection drops.
-//
-// this one is a diff rather than the festivals' delete-then-insert, because a
+// festivals are. this one is a diff rather than delete-then-insert, because a
 // replace would silently reset every column this form does not edit — terms,
-// is_available, is_featured, image — and an admin who had switched a package off
-// would find it back on the public page with its terms gone. rows are matched on
-// name, the only handle the flat form carries, so an untouched package keeps its
-// row and only details and price are written back.
+// is_available, is_featured, image. rows are matched on name, the only handle
+// the flat form carries.
 export async function saveTempleServicesAction(
   templeId: string,
   services: { name: string; details: string; price: string }[]
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    // whole rupees, because the column is an integer and 250.5 would arrive as a
-    // postgrest 400 with no useful text. 0 is a real value, not a missing one: it
-    // is what renders as "On request", so it is kept rather than nulled.
+    // whole rupees, because the column is an integer. 0 is a real value, not a
+    // missing one: it is what renders as "On request".
     const cleaned = services.map((service, index) => {
       const name = service.name.trim();
       if (!name) throw new Error(`Service ${index + 1} needs a name.`);
@@ -2131,46 +1868,33 @@ export async function saveTempleServicesAction(
     if (new Set(wanted).size !== wanted.length)
       throw new Error("Two services have the same name.");
 
-    const { data: existing, error: readError } = await supabase
-      .from("temple_services")
-      .select("id, name")
-      .eq("temple_id", templeId);
-    if (readError) throw new Error(readError.message);
+    const existing = await q<{ id: string; name: string }>(
+      "select id, name from temple_services where temple_id = ?",
+      [templeId]
+    );
 
     // a row the form no longer lists is one the admin deleted, so it goes now
-    for (const row of existing ?? []) {
+    for (const row of existing) {
       if (wanted.includes(String(row.name).trim().toLowerCase())) continue;
-      const { error } = await supabase.from("temple_services").delete().eq("id", row.id);
-      if (error) throw new Error(error.message);
+      await run("delete from temple_services where id = ? and temple_id = ?", [row.id, templeId]);
     }
 
     for (const [index, service] of cleaned.entries()) {
-      const match = (existing ?? []).find(
+      const match = existing.find(
         (row) => String(row.name).trim().toLowerCase() === service.name.toLowerCase()
       );
       if (match) {
-        const { error } = await supabase
-          .from("temple_services")
-          .update({
-            details: service.details || null,
-            price: service.price,
-            // renumbered so the form's order is the order the public page lists
-            sort_order: index + 1,
-          })
-          .eq("id", match.id)
-          // the temple_id in the filter as well as the id, so a tampered payload
-          // cannot write to another temple's package
-          .eq("temple_id", templeId);
-        if (error) throw new Error(error.message);
+        // temple_id in the filter as well as the id, so a tampered payload
+        // cannot write to another temple's package
+        await run(
+          "update temple_services set details = ?, price = ?, sort_order = ? where id = ? and temple_id = ?",
+          [service.details || null, service.price, index + 1, match.id, templeId]
+        );
       } else {
-        const { error } = await supabase.from("temple_services").insert({
-          temple_id: templeId,
-          name: service.name,
-          details: service.details || null,
-          price: service.price,
-          sort_order: index + 1,
-        });
-        if (error) throw new Error(error.message);
+        await run(
+          "insert into temple_services (temple_id, name, details, price, sort_order) values (?, ?, ?, ?, ?)",
+          [templeId, service.name, service.details || null, service.price, index + 1]
+        );
       }
     }
 
@@ -2185,35 +1909,28 @@ export async function reorderTempleImagesAction(
   templeId: string,
   orderedIds: string[]
 ): Promise<ActionResult<Temple[]>> {
-  return run(async () => {
+  return guard(async () => {
     await assertAdmin();
-    const supabase = await getSupabaseServer();
 
-    const { data: owned, error: readError } = await supabase
-      .from("temple_images")
-      .select("id")
-      .eq("temple_id", templeId);
-    if (readError) throw new Error(readError.message);
+    const owned = await q<{ id: string }>(
+      "select id from temple_images where temple_id = ?",
+      [templeId]
+    );
 
     // only renumber the ids this temple actually owns, so a tampered payload
     // cannot reorder or renumber another temple's gallery
-    const mine = new Set((owned ?? []).map((row) => String(row.id)));
+    const mine = new Set(owned.map((row) => row.id));
     const wanted = orderedIds.filter((id) => mine.has(id));
 
-    const { error } = await supabase
-      .from("temple_images")
-      .update({ sort_order: 0 })
-      .eq("temple_id", templeId);
-    if (error) throw new Error(error.message);
-
-    for (const [index, id] of wanted.entries()) {
-      const { error: updateError } = await supabase
-        .from("temple_images")
-        .update({ sort_order: index + 1 })
-        .eq("id", id)
-        .eq("temple_id", templeId);
-      if (updateError) throw new Error(updateError.message);
-    }
+    await tx(async (db) => {
+      await db.run("update temple_images set sort_order = 0 where temple_id = ?", [templeId]);
+      for (const [index, id] of wanted.entries()) {
+        await db.run(
+          "update temple_images set sort_order = ? where id = ? and temple_id = ?",
+          [index + 1, id, templeId]
+        );
+      }
+    });
 
     revalidatePath("/admin/temples");
     revalidatePath("/temples");

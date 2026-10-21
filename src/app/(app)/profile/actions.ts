@@ -3,11 +3,13 @@
 // every write to an interest. the member identity comes from the dal rather
 // than from an argument, because the whole security argument here rests on
 // from_profile_id and to_profile_id being the profiles.uuid of the session's own
-// profile and the one being acted on - a client that could name either would be
-// able to send interests as somebody else or answer one addressed to them.
+// profile and the one being acted on. mysql has no row level security, so the
+// explicit filters below are the entire boundary.
 import { revalidatePath } from "next/cache";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { randomUUID } from "crypto";
+import { q1, run } from "@/lib/db";
 import { assertMember } from "@/lib/data/member-dal";
+import { jsonList } from "@/lib/data/mappers";
 import { interestsSentSince, monthStart, resolveMemberPlan, resolvePlanLimits } from "@/lib/payments/quotas";
 import type { InterestStatus } from "@/types";
 
@@ -24,14 +26,16 @@ export type InterestQuota = {
 const FAILURE = "Your session has expired. Please sign in again.";
 
 // the recipient's answer, and the sender's recall, both land here. anything the
-// recipient is not allowed to set is refused rather than filtered, so a forged
-// call fails loudly instead of quietly doing nothing.
+// recipient is not allowed to set is refused rather than filtered.
 const RESPONSIBLE_STATUSES: InterestStatus[] = ["accepted", "declined"];
 
 function newInterestKey(): string {
-  // interest_id is the human-facing key the sibling tables carry; the uuid
-  // primary key is generated at the insert, which needs it back first
-  return `i${crypto.randomUUID().slice(0, 8)}`;
+  return `i${randomUUID().slice(0, 8)}`;
+}
+
+async function resolveUuid(profileKey: string): Promise<string> {
+  const row = await q1<{ id: string }>("select id from profiles where profile_id = ?", [profileKey]);
+  return row?.id ?? "";
 }
 
 /**
@@ -47,17 +51,13 @@ export async function sendInterest(toProfileId: string): Promise<SendInterestRes
 
   if (!member.profileUuid) return { ok: false, error: "Complete your profile to send an interest." };
 
-  const supabase = await getSupabaseServer();
-
   try {
     // resolve the target's uuid. the array stores the public profile_id, which
     // the profiles table is keyed on too, so this is the same lookup either way
-    const { data: target, error: targetError } = await supabase
-      .from("profiles")
-      .select("id, profile_id")
-      .eq("profile_id", toProfileId)
-      .maybeSingle();
-    if (targetError) throw new Error(targetError.message);
+    const target = await q1<{ id: string }>(
+      "select id from profiles where profile_id = ?",
+      [toProfileId]
+    );
     if (!target) return { ok: false, error: "That profile no longer exists." };
 
     // sending to yourself would satisfy the unique index and produce a pair
@@ -66,32 +66,26 @@ export async function sendInterest(toProfileId: string): Promise<SendInterestRes
       return { ok: false, error: "You cannot send an interest to your own profile." };
     }
 
-    // Get current user's profile ID
-    const { data: currentProfile, error: profileError } = await supabase
-      .from("profiles")
-      .select("id, interested_profile")
-      .eq("user_id", member.userId)
-      .maybeSingle();
+    const currentProfile = await q1<{ interested_profile: string[] | null }>(
+      "select interested_profile from profiles where user_id = ?",
+      [member.userId]
+    );
+    if (!currentProfile) return { ok: false, error: "Could not load your profile." };
 
-    if (profileError || !currentProfile) {
-      return { ok: false, error: "Could not load your profile." };
-    }
+    const currentInterestedProfiles = jsonList(currentProfile.interested_profile);
 
-    const currentInterestedProfiles = (currentProfile.interested_profile || []) as string[];
-
-    // Check if already interested in this profile
+    // already interested in this profile?
     if (currentInterestedProfiles.includes(toProfileId)) {
       return { ok: false, error: "You have already sent an interest to this profile." };
     }
 
     // Monthly quota from the sender's plan. Premium (null) skips the count
-    // entirely; every other tier is refused once this month's sends reach it.
-    // A failed count fails open: blocking a paid-up member over a transient
-    // read error is worse than one uncounted send.
-    const plan = await resolveMemberPlan(supabase, member.userId);
-    const { interests: quota } = await resolvePlanLimits(supabase, plan);
+    // entirely; a failed count fails open: blocking a paid-up member over a
+    // transient read error is worse than one uncounted send.
+    const plan = await resolveMemberPlan(member.userId);
+    const { interests: quota } = await resolvePlanLimits(plan);
     if (quota !== null) {
-      const sent = await interestsSentSince(supabase, member.profileUuid, monthStart());
+      const sent = await interestsSentSince(member.profileUuid, monthStart());
       if (sent !== null && sent >= quota) {
         return {
           ok: false,
@@ -100,46 +94,30 @@ export async function sendInterest(toProfileId: string): Promise<SendInterestRes
       }
     }
 
-    // Add the profile ID to the interested_profile array
-    const updatedInterestedProfiles = [...currentInterestedProfiles, toProfileId];
-
-    const { error: updateError } = await supabase
-      .from("profiles")
-      .update({
-        interested_profile: updatedInterestedProfiles,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", member.userId);
-
-    if (updateError) {
-      return { ok: false, error: `Could not send interest: ${updateError.message}` };
-    }
-
     // the array is the sender's own record and carries no status, so the row in
     // public.interests is what the recipient can see and what the sender's
     // history is read back from. it is written second on purpose: if it fails
-    // the send still shows in the sender's list, whereas writing it first would
-    // leave a pending row the sender has no record of.
-    const { error: interestError } = await supabase.from("interests").insert({
-      id: crypto.randomUUID(),
-      interest_id: newInterestKey(),
-      from_profile_id: member.profileUuid,
-      to_profile_id: target.id,
-      status: "pending",
-      message: null,
-      viewed: false,
-      created_at: new Date().toISOString(),
-    });
-    if (interestError) {
-      // 23505 is the partial unique index: the array check above passed but
-      // another send landed first. not a failure the member can act on
-      if (interestError.code === "23505") {
+    // the send still shows in the sender's list.
+    await run(
+      "update profiles set interested_profile = ?, updated_at = now() where user_id = ?",
+      [JSON.stringify([...currentInterestedProfiles, toProfileId]), member.userId]
+    );
+
+    try {
+      await run(
+        "insert into interests (id, interest_id, from_profile_id, to_profile_id, status, message, viewed) " +
+          "values (?, ?, ?, ?, 'pending', null, 0)",
+        [randomUUID(), newInterestKey(), member.profileUuid, target.id]
+      );
+    } catch (error) {
+      // the partial unique index: another send landed first. not a failure the
+      // member can act on
+      if (/idx_interests|duplicate/i.test(error instanceof Error ? error.message : "")) {
         return { ok: false, error: "You have already sent an interest to this profile." };
       }
-      return { ok: false, error: `Could not record the interest: ${interestError.message}` };
+      return { ok: false, error: `Could not record the interest: ${error instanceof Error ? error.message : "unknown error"}` };
     }
 
-    // Revalidate relevant paths
     revalidatePath("/");
     revalidatePath("/search");
     revalidatePath("/brides");
@@ -149,9 +127,9 @@ export async function sendInterest(toProfileId: string): Promise<SendInterestRes
 
     return { ok: true, message: "Interest sent successfully!" };
   } catch (error) {
-    return { 
-      ok: false, 
-      error: error instanceof Error ? error.message : "An unexpected error occurred" 
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "An unexpected error occurred",
     };
   }
 }
@@ -169,12 +147,11 @@ export async function getInterestQuota(): Promise<InterestQuota> {
     return { limit: null, used: 0, remaining: null };
   }
 
-  const supabase = await getSupabaseServer();
-  const plan = await resolveMemberPlan(supabase, member.userId);
-  const { interests: limit } = await resolvePlanLimits(supabase, plan);
+  const plan = await resolveMemberPlan(member.userId);
+  const { interests: limit } = await resolvePlanLimits(plan);
   if (limit === null) return { limit: null, used: 0, remaining: null };
 
-  const used = (await interestsSentSince(supabase, member.profileUuid, monthStart())) ?? 0;
+  const used = (await interestsSentSince(member.profileUuid, monthStart())) ?? 0;
   return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
@@ -189,58 +166,38 @@ export async function withdrawInterest(toProfileId: string): Promise<SendInteres
     return { ok: false, error: FAILURE };
   }
 
-  const supabase = await getSupabaseServer();
-
   try {
-    // Get current user's profile ID
-    const { data: currentProfile, error: profileError } = await supabase
-      .from("profiles")
-      .select("id, interested_profile")
-      .eq("user_id", member.userId)
-      .maybeSingle();
-
-    if (profileError || !currentProfile) {
-      return { ok: false, error: "Could not load your profile." };
-    }
-
-    const currentInterestedProfiles = (currentProfile.interested_profile || []) as string[];
-
-    // Remove the profile ID from the interested_profile array
-    const updatedInterestedProfiles = currentInterestedProfiles.filter(
-      (id) => id !== toProfileId
+    const currentProfile = await q1<{ interested_profile: string[] | null }>(
+      "select interested_profile from profiles where user_id = ?",
+      [member.userId]
     );
+    if (!currentProfile) return { ok: false, error: "Could not load your profile." };
 
-    const { error: updateError } = await supabase
-      .from("profiles")
-      .update({
-        interested_profile: updatedInterestedProfiles,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", member.userId);
+    const currentInterestedProfiles = jsonList(currentProfile.interested_profile);
 
-    if (updateError) {
-      return { ok: false, error: `Could not withdraw interest: ${updateError.message}` };
-    }
+    await run(
+      "update profiles set interested_profile = ?, updated_at = now() where user_id = ?",
+      [
+        JSON.stringify(currentInterestedProfiles.filter((id) => id !== toProfileId)),
+        member.userId,
+      ]
+    );
 
     // the row is marked withdrawn rather than deleted. it is the only record
     // that the interest was ever sent, and the recipient's side of the history
     // should show that it was recalled rather than silently vanish.
     //
-    // filtered on both ends of the pair: the neq keeps the filter off the rows
-    // that are already recalled, so a re-send followed by a withdraw only
+    // filtered on both ends of the pair: the status != keeps the filter off the
+    // rows that are already recalled, so a re-send followed by a withdraw only
     // touches the newer pending row and never rewrites the earlier history.
-    const targetUuid = await resolveUuid(supabase, toProfileId);
+    const targetUuid = await resolveUuid(toProfileId);
     if (!targetUuid) return { ok: false, error: "That profile no longer exists." };
 
-    const { error: withdrawError } = await supabase
-      .from("interests")
-      .update({ status: "withdrawn" })
-      .eq("from_profile_id", member.profileUuid)
-      .eq("to_profile_id", targetUuid)
-      .neq("status", "withdrawn");
-    if (withdrawError) {
-      return { ok: false, error: `Could not withdraw interest: ${withdrawError.message}` };
-    }
+    await run(
+      "update interests set status = 'withdrawn' " +
+        "where from_profile_id = ? and to_profile_id = ? and status <> 'withdrawn'",
+      [member.profileUuid, targetUuid]
+    );
 
     revalidatePath("/");
     revalidatePath("/search");
@@ -251,9 +208,9 @@ export async function withdrawInterest(toProfileId: string): Promise<SendInteres
 
     return { ok: true, message: "Interest withdrawn successfully!" };
   } catch (error) {
-    return { 
-      ok: false, 
-      error: error instanceof Error ? error.message : "An unexpected error occurred" 
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "An unexpected error occurred",
     };
   }
 }
@@ -274,21 +231,15 @@ export async function respondToInterest(
     return { ok: false, error: FAILURE };
   }
 
-  const supabase = await getSupabaseServer();
-
-  // the to_profile_id filter is the ownership check: interests_update would
-  // happily let the sender answer their own interest, and the recipient is the
-  // only one whose answer means anything
-  const { data, error } = await supabase
-    .from("interests")
-    .update({ status, viewed: true })
-    .eq("id", interestId)
-    .eq("to_profile_id", member.profileUuid)
-    .select("id")
-    .maybeSingle();
-
-  if (error) return { ok: false, error: error.message };
-  if (!data) return { ok: false, error: "That interest is no longer waiting for you." };
+  // the to_profile_id filter is the ownership check: without it a member could
+  // answer an interest that was never addressed to them
+  const result = await run(
+    "update interests set status = ?, viewed = 1 where id = ? and to_profile_id = ?",
+    [status, interestId, member.profileUuid]
+  );
+  if (!(result as { affectedRows?: number }).affectedRows) {
+    return { ok: false, error: "That interest is no longer waiting for you." };
+  }
 
   revalidatePath("/interests");
   return {
@@ -300,9 +251,8 @@ export async function respondToInterest(
 // opened, not answered. one call for the whole list rather than one per row.
 //
 // deliberately does not revalidatePath: the flag only feeds the unread badge the
-// recipient is already looking at, and revalidating from an effect on the page
-// that renders it would bounce the router back on itself. the caller marks the
-// rows it sent as read locally instead.
+// recipient is already looking at. the caller marks the rows it sent as read
+// locally instead.
 export async function markReceivedViewed(): Promise<SendInterestResult> {
   let member;
   try {
@@ -311,28 +261,10 @@ export async function markReceivedViewed(): Promise<SendInterestResult> {
     return { ok: false, error: FAILURE };
   }
 
-  const supabase = await getSupabaseServer();
-  const { error } = await supabase
-    .from("interests")
-    .update({ viewed: true })
-    .eq("to_profile_id", member.profileUuid)
-    .eq("viewed", false)
-    .neq("status", "withdrawn");
-
-  if (error) return { ok: false, error: error.message };
+  await run(
+    "update interests set viewed = 1 where to_profile_id = ? and viewed = 0 and status <> 'withdrawn'",
+    [member.profileUuid]
+  );
 
   return { ok: true, message: "" };
-}
-
-async function resolveUuid(
-  supabase: Awaited<ReturnType<typeof getSupabaseServer>>,
-  profileKey: string
-): Promise<string> {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id")
-    .eq("profile_id", profileKey)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return (data as { id?: string } | null)?.id ?? "";
 }

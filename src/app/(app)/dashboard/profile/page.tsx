@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Pencil, Users, X } from "lucide-react";
-import { loadOwnProfile } from "@/features/profiles/queries";
+import { loadOwnProfile } from "@/features/profiles/loaders";
 import { useAuth } from "@/features/auth/auth-provider";
 import { Button } from "@/components/ui/button";
 import {

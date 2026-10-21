@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { loadProfile } from "@/features/profiles/queries";
+import { loadProfile } from "@/features/profiles/loaders";
 import { ProfileDetailView } from "@/components/profile/profile-view";
 import { getCurrentMember } from "@/lib/data/member-dal";
-import { getSupabaseServer } from "@/lib/supabase/server";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { q1 } from "@/lib/db";
 import { resolveMemberPlan } from "@/lib/payments/quotas";
 
 // the profile comes from the database, so this route is rendered per request
@@ -39,19 +38,14 @@ export default async function ProfilePage({
   let contact: { phone: string; email: string } | null = null;
   const member = await getCurrentMember();
   if (member) {
-    const supabase = await getSupabaseServer();
-    const plan = await resolveMemberPlan(supabase, member.userId);
+    const plan = await resolveMemberPlan(member.userId);
     if (plan === "premium") {
-      const admin = getSupabaseAdmin();
-      if (admin) {
-        const { data } = await admin
-          .from("users")
-          .select("phone_number, email")
-          .eq("user_id", profile.userId)
-          .maybeSingle<{ phone_number: string | null; email: string | null }>();
-        if (data && (data.phone_number || data.email)) {
-          contact = { phone: data.phone_number ?? "", email: data.email ?? "" };
-        }
+      const user = await q1<{ phone_number: string | null; email: string | null }>(
+        "select phone_number, email from users where user_id = ?",
+        [profile.userId]
+      );
+      if (user && (user.phone_number || user.email)) {
+        contact = { phone: user.phone_number ?? "", email: user.email ?? "" };
       }
     }
   }

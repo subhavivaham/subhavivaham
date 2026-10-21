@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { CheckboxGroup, Input, Select, Textarea } from "@/components/ui/field";
 import { useToast } from "@/lib/state/toast-provider";
 import { useAuth } from "@/features/auth/auth-provider";
-import { fetchCommunities } from "@/lib/data/queries";
+import { loadCommunities as fetchCommunities } from "@/lib/data/public-actions";
 import { addPhotos, getPhotoQuota, makePrimaryPhoto, removePhoto, updateProfile } from "./actions";
 import {
   initialRegistrationDraft,

@@ -1,7 +1,8 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { q1 } from "@/lib/db";
+import { createSession, destroySession, verifyPassword } from "@/lib/auth/session";
 import { ADMIN_CLAIM } from "@/lib/data/admin-dal";
 
 export type LoginState = { error: string } | null;
@@ -17,26 +18,29 @@ export async function adminSignIn(
     return { error: "Enter both email and password." };
   }
 
-  const supabase = await getSupabaseServer();
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  const user = await q1<{ user_id: string; role: string; password_hash: string | null; status: string }>(
+    "select user_id, role, password_hash, status from users where email = ?",
+    [email]
+  );
 
-  if (error || !data.user) {
+  if (!user || !verifyPassword(password, user.password_hash)) {
     return { error: "Invalid email or password." };
   }
 
-  // a valid account without the admin claim still gets a session, so drop it
-  // before it can reach any protected read
-  if (data.user.app_metadata?.role !== ADMIN_CLAIM) {
-    await supabase.auth.signOut();
+  // a valid account without the admin role still must not get a session here
+  if (user.role !== ADMIN_CLAIM) {
     return { error: "This account does not have admin access." };
   }
 
-  // signOut above already wrote cookies, so redirect must come last
+  if (user.status !== "active") {
+    return { error: "This account is disabled." };
+  }
+
+  await createSession(user.user_id);
   redirect("/admin");
 }
 
 export async function adminSignOut(): Promise<void> {
-  const supabase = await getSupabaseServer();
-  await supabase.auth.signOut();
+  await destroySession();
   redirect("/admin/login");
 }

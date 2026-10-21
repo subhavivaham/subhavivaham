@@ -7,6 +7,7 @@ export const isMailConfigured = Boolean(apiKey);
 
 const from = process.env.EMAIL_FROM || "Subha Vivaham <onboarding@resend.dev>";
 const notifyTo = process.env.VENDOR_NOTIFY_EMAIL || "subhavivaham2017@gmail.com";
+const adminUrl = "https://www.subhavivaham.com/admin";
 
 export interface VendorRegistrationNotifier {
   name: string;
@@ -79,6 +80,9 @@ export async function sendVendorRegistrationEmail(
       <p style="margin:16px 0 0;color:#4b5563;">
         Review and approve this submission from the admin services page.
       </p>
+      <p style="margin:12px 0 0;">
+        <a href="${adminUrl}" style="color:#7f1d1d;font-weight:600;">Open the admin dashboard</a>
+      </p>
     </div>
   `;
 
@@ -91,6 +95,7 @@ export async function sendVendorRegistrationEmail(
     vendor.city ? `City: ${vendor.city}` : null,
     vendor.address ? `Address: ${vendor.address}` : null,
     vendor.details ? `Details: ${vendor.details}` : null,
+    `Open admin: ${adminUrl}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -150,6 +155,9 @@ export async function sendMemberRegistrationEmail(
       <p style="margin:16px 0 0;color:#4b5563;">
         Review and verify this profile from the admin profiles page.
       </p>
+      <p style="margin:12px 0 0;">
+        <a href="${adminUrl}" style="color:#7f1d1d;font-weight:600;">Open the admin dashboard</a>
+      </p>
     </div>
   `;
 
@@ -167,6 +175,7 @@ export async function sendMemberRegistrationEmail(
     member.education ? `Education: ${member.education}` : null,
     member.profession ? `Profession: ${member.profession}` : null,
     location ? `Location: ${location}` : null,
+    `Open admin: ${adminUrl}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -181,6 +190,58 @@ export async function sendMemberRegistrationEmail(
       text,
     });
 
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unknown mail error.",
+    };
+  }
+}
+
+// a short acknowledgement the registrant themselves receives. the mails above
+// only alert the admin; under Supabase this arrived as a signup confirmation,
+// so removing auth also removed the only mail a new member ever saw.
+function confirmationHtml(heading: string, name: string, body: string): string {
+  return `
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+      <h2 style="margin:0 0 4px;">${heading}</h2>
+      <p style="margin:0 0 12px;">Hello ${escapeHtml(name)},</p>
+      <p style="margin:0 0 12px;color:#4b5563;line-height:1.6;">${body}</p>
+      <p style="margin:16px 0 0;color:#4b5563;">
+        — Team Subha Vivaham · <a href="https://www.subhavivaham.com" style="color:#7f1d1d;">subhavivaham.com</a>
+      </p>
+    </div>
+  `;
+}
+
+export async function sendMemberConfirmationEmail(
+  to: string,
+  name: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!apiKey) return { ok: false, error: "RESEND_API_KEY is not configured." };
+  try {
+    const resend = new Resend(apiKey);
+    const { error } = await resend.emails.send({
+      from,
+      to,
+      subject: "Welcome to Subha Vivaham — your profile is received",
+      html: confirmationHtml(
+        "Welcome to Subha Vivaham",
+        name,
+        "Thank you for registering. Your profile is now with our team and will be verified shortly — usually within one working day. You can sign in with the email address and password you chose during registration."
+      ),
+      text: [
+        `Hello ${name},`,
+        "",
+        "Thank you for registering with Subha Vivaham.",
+        "Your profile is now with our team and will be verified shortly — usually within one working day.",
+        "You can sign in with the email address and password you chose during registration.",
+        "",
+        "— Team Subha Vivaham",
+      ].join("\n"),
+    });
     if (error) return { ok: false, error: error.message };
     return { ok: true };
   } catch (error) {

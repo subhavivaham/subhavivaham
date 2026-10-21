@@ -448,7 +448,7 @@ export const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 // the accept attribute for <input type="file">, derived from the types above
 export const PHOTO_ACCEPT = PHOTO_TYPES.join(",");
 
-// the supabase storage bucket the register action uploads into. the matching
+// the local uploads folder the register action saves into. the matching
 // bucket and policies live in migrations/0001_registration_photo_uploads.sql.
 export const PHOTO_BUCKET = "profile-photos";
 

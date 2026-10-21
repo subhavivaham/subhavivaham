@@ -149,6 +149,10 @@ export interface Profile {
   lastActive: string;
   profileCreatedOn: string;
   horoscopeLink?: string;
+  // contact details live on the users row; only populated by admin reads that
+  // join it, never on member-facing profile queries
+  email?: string;
+  mobile?: string;
   family: FamilyDetails;
   lifestyle: Lifestyle;
   preference: PartnerPreference;

@@ -5,7 +5,7 @@
 // an independently reachable endpoint, so the browser's copy of these rules is
 // a convenience for the member, never the guarantee.
 import { MIN_PHOTOS, OTHER } from "@/lib/constants";
-import { PHOTO_QUOTA } from "@/lib/payments/quotas";
+import { PHOTO_QUOTA } from "@/lib/payments/quota-defaults";
 
 export interface RegistrationDraft {
   email: string;

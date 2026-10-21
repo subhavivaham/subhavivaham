@@ -187,6 +187,10 @@ export function RegisterForm({
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [photoNotice, setPhotoNotice] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // hobbies are held as an array in the draft, so the input keeps the raw text
+  // too: joining the array back on every keystroke swallowed the commas and
+  // spaces as they were typed
+  const [hobbyText, setHobbyText] = useState("");
 
   // object urls outlive the component unless they are released. removals revoke
   // their own url, so this only has to cover the ones still held at unmount -
@@ -812,15 +816,17 @@ export function RegisterForm({
                 label="Hobbies"
                 placeholder="e.g. Reading, classical dance"
                 hint="Separate each one with a comma."
-                value={draft.hobbies.join(", ")}
-                onChange={(e) =>
+                value={hobbyText}
+                onChange={(e) => {
+                  setHobbyText(e.target.value);
                   set({
                     hobbies: e.target.value
-                      .split(",")
+                      .split(/[,\n]/)
                       .map((h) => h.trim())
-                      .filter(Boolean),
-                  })
-                }
+                      .filter(Boolean)
+                      .slice(0, 12),
+                  });
+                }}
               />
             </>
           )}

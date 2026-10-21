@@ -23,7 +23,12 @@ import { formatRelativeTime } from "@/lib/utils";
 function formatDate(iso: string): string {
   const parsed = new Date(iso);
   if (!iso || Number.isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return parsed.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 export function AdminDashboard({ data }: { data: DashboardData }) {
